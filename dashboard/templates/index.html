@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vulnerability Intelligence Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">&#128737;</span>
+      <span class="brand-name">Vulnerability Intelligence</span>
+    </div>
+    <button id="themeToggle" class="theme-toggle" title="Toggle dark mode">&#9789;</button>
+  </header>
+
+  <main class="container">
+    <section class="stats-grid" id="statsGrid" aria-label="Summary statistics"></section>
+
+    <section class="charts-grid">
+      <div class="card chart-card">
+        <h2>Severity Distribution</h2>
+        <canvas id="severityChart" height="220"></canvas>
+      </div>
+      <div class="card chart-card">
+        <h2>Top Affected Vendors</h2>
+        <canvas id="vendorChart" height="220"></canvas>
+      </div>
+    </section>
+
+    <section class="card toolbar">
+      <input id="searchInput" type="search" placeholder="Search CVE, vendor, product, CWE, summary..." />
+
+      <select id="filterSeverity"><option value="">All Severities</option>
+        <option value="Critical">Critical</option>
+        <option value="High">High</option>
+        <option value="Medium">Medium</option>
+        <option value="Low">Low</option>
+      </select>
+
+      <select id="filterVendor"><option value="">All Vendors</option></select>
+      <select id="filterProduct"><option value="">All Products</option></select>
+      <select id="filterSource"><option value="">All Sources</option></select>
+
+      <input id="filterMinCvss" type="number" min="0" max="10" step="0.1" placeholder="Min CVSS" />
+      <input id="filterMinEpss" type="number" min="0" max="1" step="0.01" placeholder="Min EPSS" />
+      <input id="filterPublishedAfter" type="date" title="Published after" />
+
+      <label class="checkbox-label">
+        <input id="filterKev" type="checkbox" /> KEV only
+      </label>
+
+      <button id="resetFilters" class="btn-secondary">Reset</button>
+    </section>
+
+    <section class="card table-card">
+      <div class="table-wrap">
+        <table id="cveTable">
+          <thead>
+            <tr>
+              <th data-sort="cve_id">CVE</th>
+              <th data-sort="risk_score">Risk</th>
+              <th data-sort="cvss">CVSS</th>
+              <th data-sort="epss">EPSS</th>
+              <th>KEV</th>
+              <th data-sort="vendor">Vendor</th>
+              <th>Product</th>
+              <th>Affected</th>
+              <th>Fixed</th>
+              <th data-sort="published">Published</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody id="cveTableBody"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination"></div>
+    </section>
+  </main>
+
+  <div id="detailModal" class="modal hidden">
+    <div class="modal-content card">
+      <button id="closeModal" class="btn-close">&times;</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

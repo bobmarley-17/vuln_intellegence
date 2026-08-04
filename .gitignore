@@ -1,0 +1,10 @@
+.env
+__pycache__/
+**/__pycache__/
+*.pyc
+cache/*.db
+cache/*.db-*
+cache/kev_catalog.json
+logs/*.log
+logs/*.log.*
+reports/
