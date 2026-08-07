@@ -66,12 +66,12 @@ class MitreClient:
                 )
 
         refs = cna.get("references", [])
-        existing = set(target.references)
+        # Use a set for efficient addition and deduplication
+        all_refs = set(target.references)
         for r in refs:
-            url = r.get("url")
-            if url and url not in existing:
-                target.references.append(url)
-                existing.add(url)
+            if url := r.get("url"):
+                all_refs.add(url)
+        target.references = sorted(list(all_refs))
 
     def _fetch(self, cve_id: str) -> dict | None:
         url = f"{CVE_ORG_BASE_URL}/{cve_id}"

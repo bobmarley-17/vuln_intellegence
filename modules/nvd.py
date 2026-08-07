@@ -54,7 +54,9 @@ class NVDClient:
         target.cwe = self._parse_cwe(cve.get("weaknesses", []))
         configurations = cve.get("configurations", [])
         target.cpes = self._parse_cpes(configurations)
-        target.references = list({r["url"] for r in cve.get("references", []) if r.get("url")})
+        # Merge and deduplicate with any existing references (e.g., from Mitre)
+        new_refs = {r["url"] for r in cve.get("references", []) if r.get("url")}
+        target.references = sorted(list(set(target.references) | new_refs))
         return configurations
 
     def _fetch(self, cve_id: str) -> dict | None:
