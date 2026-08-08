@@ -42,7 +42,18 @@ CREATE TABLE IF NOT EXISTS cves (
     last_enriched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_urls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT UNIQUE NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    cves_found INTEGER,
+    last_checked TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_article_cves_cve ON article_cves(cve_id);
+CREATE INDEX IF NOT EXISTS idx_source_urls_status ON source_urls(status);
 """
 
 
@@ -127,6 +138,41 @@ class VulnCache:
                 d["cves"] = [r["cve_id"] for r in cve_rows]
                 articles.append(d)
             return articles
+
+    # ------------------------------------------------------------------
+    # Source URLs
+    # ------------------------------------------------------------------
+    def add_source_url(self, url: str) -> int | None:
+        """Adds a new source URL for processing. Returns the new row ID."""
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO source_urls (url, status, last_checked, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (url, "Pending", now, now),
+                )
+                return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            logger.warning("Source URL %s already exists in the database.", url)
+            return None
+
+    def get_all_sources(self) -> list[dict]:
+        """Returns all tracked source URLs."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, url, title, status, cves_found, last_checked FROM source_urls ORDER BY created_at DESC"
+            ).fetchall()
+        # sqlite3.Row objects act like dicts, so this is fine for jsonify
+        return [dict(r) for r in rows]
+
+    def delete_source(self, source_id: int) -> None:
+        """Deletes a source URL by its ID."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM source_urls WHERE id = ?", (source_id,))
+            logger.info("Deleted source URL with ID %d", source_id)
 
     # ------------------------------------------------------------------
     # CVEs
