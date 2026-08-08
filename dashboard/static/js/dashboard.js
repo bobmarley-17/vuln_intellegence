@@ -326,7 +326,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <div class="col-md-6">
                     <h5>Details</h5>
                     <ul class="list-unstyled">
-                        <li><strong>Severity:</strong> <span class="badge badge-${cve.risk_level || 'LOW'}">${cve.risk_level || 'Not Available'}</span></li>
+                        <li><strong>Severity:</strong> <span class="badge badge-${(cve.risk_level || 'LOW').toUpperCase()}">${escapeHtml(cve.risk_level || 'Not Available')}</span></li>
                         <li><strong>Published:</strong> ${formatDate(cve.published_date)}</li>
                         <li><strong>Last Modified:</strong> ${formatDate(cve.modified_date)}</li>
                         <li><strong>Vendor:</strong> ${na(cve.vendor)}</li>
