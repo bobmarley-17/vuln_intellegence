@@ -196,6 +196,50 @@ def collapse_affected_products(products: list[AffectedProduct]) -> list[Affected
     return collapsed
 
 
+_BOUND_RE = re.compile(r"^(>=|>|<=|<)\s*(.+)$")
+
+
+def version_in_range(version: str, range_part: str) -> bool:
+    """Check whether `version` satisfies a single (non-multi-branch) range
+    string as produced by `normalize_cpe_matches`, e.g. '>= 1.0, <= 1.2',
+    '< 9.0.95', a bare pinned version like '1.0', or 'all versions'."""
+    range_part = range_part.strip()
+    if range_part.lower() == "all versions":
+        return True
+
+    bounds = [b.strip() for b in range_part.split(",") if b.strip()]
+    if not bounds:
+        return False
+    if not _BOUND_RE.match(bounds[0]):
+        # A bare version with no comparison operator is a pinned exact match.
+        return _version_sort_key(version) == _version_sort_key(bounds[0])
+
+    for bound in bounds:
+        match = _BOUND_RE.match(bound)
+        if not match:
+            continue
+        op, bound_version = match.group(1), match.group(2).strip()
+        key, bound_key = _version_sort_key(version), _version_sort_key(bound_version)
+        if op == ">=" and not key >= bound_key:
+            return False
+        if op == ">" and not key > bound_key:
+            return False
+        if op == "<=" and not key <= bound_key:
+            return False
+        if op == "<" and not key < bound_key:
+            return False
+    return True
+
+
+def product_version_affected(affected_range: str | None, version: str) -> bool:
+    """Check whether `version` falls in `affected_range`, which may combine
+    several distinct branches joined by '; ' (as produced by
+    `collapse_affected_products`)."""
+    if not affected_range or not version:
+        return False
+    return any(version_in_range(version, part) for part in affected_range.split(";"))
+
+
 def _product_label(p: AffectedProduct) -> str:
     """'{vendor} {product}', without repeating the vendor name when the
     product string (e.g. from CVE.org) already includes it."""

@@ -14,7 +14,8 @@ from flask import Flask, jsonify, render_template, request
 from config import Config
 from modules.cache import VulnCache
 from modules.downloader import Downloader
-from modules.models import EnrichedCVE
+from modules.models import AffectedProduct, EnrichedCVE
+from modules.normalizer import product_version_affected
 from modules.pipeline import Pipeline
 
 logger = logging.getLogger("vuln_intel.dashboard")
@@ -158,6 +159,61 @@ def create_app(config: Config) -> Flask:
         if cve is None:
             return jsonify({"error": "CVE not found"}), 404
         return jsonify(_serialize(cve))
+
+    @app.route("/api/check")
+    def api_check():
+        """Vulnerability checker: given a product (and optionally a vendor
+        and a version), return every known CVE affecting that product, with
+        a per-CVE vulnerable/not-affected verdict when a version is given."""
+        vendor = (request.args.get("vendor") or "").strip()
+        product = (request.args.get("product") or "").strip()
+        version = (request.args.get("version") or "").strip()
+        if not product:
+            return jsonify({"error": "A product is required"}), 400
+
+        cves = cache.get_all_cves()
+        results = []
+        for cve in cves:
+            candidates = cve.affected_products or (
+                [AffectedProduct(vendor=cve.vendor or "", product=cve.product)] if cve.product else []
+            )
+            match = next(
+                (
+                    ap
+                    for ap in candidates
+                    if product.lower() in (ap.product or "").lower()
+                    and (not vendor or vendor.lower() in (ap.vendor or "").lower())
+                ),
+                None,
+            )
+            if match is None:
+                continue
+
+            if version and match.affected_range:
+                status = "vulnerable" if product_version_affected(match.affected_range, version) else "not_affected"
+            else:
+                status = "unknown"
+
+            results.append(
+                {
+                    "cve": _serialize(cve),
+                    "matched_vendor": match.vendor,
+                    "matched_product": match.product,
+                    "affected_range": match.affected_range,
+                    "fixed_version": match.fixed_version,
+                    "version_status": status,
+                }
+            )
+
+        results.sort(key=lambda r: r["cve"]["risk_score"] or 0, reverse=True)
+        return jsonify(
+            {
+                "query": {"vendor": vendor or None, "product": product, "version": version or None},
+                "total": len(results),
+                "vulnerable_count": sum(1 for r in results if r["version_status"] == "vulnerable"),
+                "results": results,
+            }
+        )
 
     @app.route("/api/filters")
     def api_filters():
