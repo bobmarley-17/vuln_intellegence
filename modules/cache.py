@@ -115,15 +115,25 @@ class VulnCache:
                     article.fetched_at,
                 ),
             )
-            article_id = cur.lastrowid
-            if article_id == 0:  # ON CONFLICT UPDATE path: fetch existing id
-                row = conn.execute("SELECT id FROM articles WHERE url = ?", (article.url,)).fetchone()
-                article_id = row["id"]
+            # SQLite's lastrowid is not reliable on the UPDATE side of an
+            # UPSERT. Fetch the canonical row id every time.
+            row = conn.execute("SELECT id FROM articles WHERE url = ?", (article.url,)).fetchone()
+            article_id = row["id"]
+            # Replace stale article-to-CVE associations on a later fetch.
+            conn.execute("DELETE FROM article_cves WHERE article_id = ?", (article_id,))
             for cve_id in article.cves:
                 conn.execute(
                     "INSERT OR IGNORE INTO article_cves (article_id, cve_id) VALUES (?, ?)",
                     (article_id, cve_id),
                 )
+            conn.execute(
+                """
+                UPDATE source_urls
+                SET title = ?, status = ?, cves_found = ?, last_checked = ?
+                WHERE url = ?
+                """,
+                (article.title, "Processed", len(article.cves), article.fetched_at, article.url),
+            )
             return article_id
 
     def get_articles(self) -> list[dict]:
@@ -167,6 +177,20 @@ class VulnCache:
             ).fetchall()
         # sqlite3.Row objects act like dicts, so this is fine for jsonify
         return [dict(r) for r in rows]
+
+    def get_source_urls(self) -> list[str]:
+        """Return user-managed URLs for inclusion in the next pipeline run."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT url FROM source_urls ORDER BY id").fetchall()
+        return [row["url"] for row in rows]
+
+    def mark_source_failed(self, url: str) -> None:
+        """Record a failed fetch without affecting configured file-based URLs."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE source_urls SET status = ?, last_checked = ? WHERE url = ?",
+                ("Failed", datetime.now(timezone.utc).isoformat(), url),
+            )
 
     def delete_source(self, source_id: int) -> None:
         """Deletes a source URL by its ID."""

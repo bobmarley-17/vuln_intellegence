@@ -11,6 +11,7 @@ from flask import Flask, jsonify, render_template, request
 
 from config import Config
 from modules.cache import VulnCache
+from modules.downloader import Downloader
 from modules.models import EnrichedCVE
 
 logger = logging.getLogger("vuln_intel.dashboard")
@@ -38,8 +39,8 @@ def create_app(config: Config) -> Flask:
         cves = _apply_search(cves, request.args.get("q", "").strip())
         cves = _apply_sort(cves, request.args.get("sort_by", "risk_score"), request.args.get("sort_dir", "desc"))
 
-        page = max(int(request.args.get("page", 1)), 1)
-        page_size = min(max(int(request.args.get("page_size", 25)), 1), 200)
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        page_size = min(max(request.args.get("page_size", 25, type=int) or 25, 1), 200)
         total = len(cves)
         start = (page - 1) * page_size
         page_items = cves[start : start + page_size]
@@ -106,9 +107,9 @@ def create_app(config: Config) -> Flask:
 
     @app.route("/api/sources", methods=["POST"])
     def api_add_source():
-        data = request.get_json()
-        url = data.get("url", "").strip()
-        if not url or not url.startswith("http"):
+        data = request.get_json(silent=True) or {}
+        url = str(data.get("url", "")).strip()
+        if not Downloader.is_valid_url(url):
             return jsonify({"error": "Invalid URL provided"}), 400
 
         source_id = cache.add_source_url(url)
@@ -145,7 +146,7 @@ def _apply_filters(cves: list[EnrichedCVE], args) -> list[EnrichedCVE]:
     if product:
         result = [c for c in result if (c.product or "").lower() == product.lower()]
     if min_cvss is not None:
-        result = [c for c in result if (c.cvss_v3_score or 0) >= min_cvss]
+        result = [c for c in result if (_cvss_score(c) or 0) >= min_cvss]
     if min_epss is not None:
         result = [c for c in result if (c.epss_score or 0) >= min_epss]
     if kev_only:
@@ -185,7 +186,7 @@ def _apply_sort(cves: list[EnrichedCVE], sort_by: str, sort_dir: str) -> list[En
     reverse = sort_dir != "asc"
     key_funcs = {
         "risk_score": lambda c: c.risk_score or 0,
-        "cvss": lambda c: c.cvss_v3_score or 0,
+        "cvss": lambda c: _cvss_score(c) or 0,
         "epss": lambda c: c.epss_score or 0,
         "published": lambda c: c.published_date or "",
         "modified": lambda c: c.modified_date or "",
@@ -198,5 +199,12 @@ def _apply_sort(cves: list[EnrichedCVE], sort_by: str, sort_dir: str) -> list[En
 
 def _serialize(cve: EnrichedCVE) -> dict:
     d = dataclasses.asdict(cve)
+    d["cvss_score"] = _cvss_score(cve)
+    d["cvss_version"] = "4.0" if cve.cvss_v4_score is not None else ("3.x" if cve.cvss_v3_score is not None else None)
     d["source_sites"] = _source_sites(cve)
     return d
+
+
+def _cvss_score(cve: EnrichedCVE) -> float | None:
+    """Use the same CVSS preference as the risk scorer."""
+    return cve.cvss_v4_score if cve.cvss_v4_score is not None else cve.cvss_v3_score

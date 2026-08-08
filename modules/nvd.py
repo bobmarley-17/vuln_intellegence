@@ -125,12 +125,11 @@ class NVDClient:
     @staticmethod
     def _parse_cpes(configurations: list[dict]) -> list[str]:
         cpes: list[str] = []
-        for config_node in configurations:
-            for node in config_node.get("nodes", []):
-                for match in node.get("cpeMatch", []):
-                    criteria = match.get("criteria")
-                    if criteria and criteria not in cpes:
-                        cpes.append(criteria)
+        for node in NVDClient._iter_configuration_nodes(configurations):
+            for match in node.get("cpeMatch", []):
+                criteria = match.get("criteria")
+                if criteria and criteria not in cpes:
+                    cpes.append(criteria)
         return cpes
 
     @staticmethod
@@ -138,17 +137,25 @@ class NVDClient:
         """Return raw cpeMatch entries (criteria + version bounds) for the
         normalizer to turn into human-readable ranges."""
         matches: list[dict] = []
-        for config_node in configurations:
-            for node in config_node.get("nodes", []):
-                for match in node.get("cpeMatch", []):
-                    matches.append(
-                        {
-                            "criteria": match.get("criteria"),
-                            "vulnerable": match.get("vulnerable", True),
-                            "versionStartIncluding": match.get("versionStartIncluding"),
-                            "versionStartExcluding": match.get("versionStartExcluding"),
-                            "versionEndIncluding": match.get("versionEndIncluding"),
-                            "versionEndExcluding": match.get("versionEndExcluding"),
-                        }
-                    )
+        for node in NVDClient._iter_configuration_nodes(configurations):
+            for match in node.get("cpeMatch", []):
+                matches.append(
+                    {
+                        "criteria": match.get("criteria"),
+                        "vulnerable": match.get("vulnerable", True),
+                        "versionStartIncluding": match.get("versionStartIncluding"),
+                        "versionStartExcluding": match.get("versionStartExcluding"),
+                        "versionEndIncluding": match.get("versionEndIncluding"),
+                        "versionEndExcluding": match.get("versionEndExcluding"),
+                    }
+                )
         return matches
+
+    @staticmethod
+    def _iter_configuration_nodes(configurations: list[dict]):
+        """Yield all NVD configuration nodes, including nested logical nodes."""
+        stack = [node for configuration in configurations for node in configuration.get("nodes", [])]
+        while stack:
+            node = stack.pop()
+            yield node
+            stack.extend(node.get("nodes", []))

@@ -16,6 +16,22 @@ document.addEventListener('DOMContentLoaded', function () {
         source_site: '',
     };
 
+    function escapeHtml(value) {
+        const element = document.createElement('div');
+        element.textContent = value ?? '';
+        return element.innerHTML;
+    }
+
+    function formatDate(value) {
+        if (!value) return 'N/A';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleDateString();
+    }
+
+    function riskLevel(value) {
+        return ['Critical', 'High', 'Medium', 'Low'].includes(value) ? value : 'Low';
+    }
+
     function fetchStats() {
         fetch(`${API_BASE}/stats`)
             .then(response => response.json())
@@ -97,8 +113,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const lastChecked = source.last_checked ? new Date(source.last_checked).toLocaleString() : 'Never';
 
             row.innerHTML = `
-                <td><a href="${source.url}" target="_blank" rel="noopener noreferrer">${source.title || source.url}</a></td>
-                <td><span class="badge bg-secondary">${source.status}</span></td>
+                <td><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a></td>
+                <td><span class="badge bg-secondary">${escapeHtml(source.status)}</span></td>
                 <td class="text-center">${cvesFound}</td>
                 <td>${lastChecked}</td>
                 <td>
@@ -133,14 +149,14 @@ document.addEventListener('DOMContentLoaded', function () {
             row.dataset.cveId = cve.cve_id; // For click events
             row.innerHTML = `
                 <td>
-                    <a href="https://nvd.nist.gov/vuln/detail/${cve.cve_id}" target="_blank" class="cve-id-link">${cve.cve_id}</a>
+                    <a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve.cve_id)}" target="_blank" rel="noopener noreferrer" class="cve-id-link">${escapeHtml(cve.cve_id)}</a>
                     ${cve.kev_listed ? '<span class="badge bg-danger ms-1">KEV</span>' : ''}
                 </td>
-                <td>${cve.summary || cve.description.substring(0, 150) + '...' || 'No description'}</td>
-                <td class="text-center"><span class="badge badge-${cve.risk_level || 'LOW'}">${cve.risk_level || 'Not Available'}</span></td>
+                <td>${escapeHtml(cve.summary || (cve.description ? `${cve.description.slice(0, 150)}...` : 'No description'))}</td>
+                <td class="text-center"><span class="badge badge-${riskLevel(cve.risk_level).toUpperCase()}">${escapeHtml(cve.risk_level || 'Not Available')}</span></td>
                 <td class="text-center">${cve.risk_score !== null ? cve.risk_score.toFixed(2) : 'N/A'}</td>
-                <td>${cve.vendor || 'N/A'}</td>
-                <td>${new Date(cve.published_date).toLocaleDateString()}</td>
+                <td>${escapeHtml(cve.vendor || 'N/A')}</td>
+                <td>${formatDate(cve.published_date)}</td>
             `;
             tbody.appendChild(row);
         });

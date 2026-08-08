@@ -60,7 +60,12 @@ def normalize_cpe_matches(cpe_matches: list[dict]) -> list[AffectedProduct]:
         upper = end_inc or end_exc
         if start_inc or start_exc:
             lower = start_inc or start_exc
-            affected_range = f"{lower} - {upper}" if upper else f">= {lower}"
+            lower_prefix = ">=" if start_inc else ">"
+            if upper:
+                upper_prefix = "<=" if end_inc else "<"
+                affected_range = f"{lower_prefix} {lower}, {upper_prefix} {upper}"
+            else:
+                affected_range = f"{lower_prefix} {lower}"
         elif upper:
             affected_range = f"<= {upper}" if end_inc else f"< {upper}"
         elif pinned_version:
@@ -169,16 +174,10 @@ def collapse_affected_products(products: list[AffectedProduct]) -> list[Affected
         # Center") - the shortest variant is reliably the cleaner one.
         product = display_product(min((r.product for r in rows), key=len))
 
-        version_pool: list[str] = []
-        for r in rows:
-            if r.affected_range:
-                version_pool.extend(_extract_version_tokens(r.affected_range) or [r.affected_range])
-
-        if version_pool:
-            ordered = sorted(set(version_pool), key=_version_sort_key)
-            affected_range = ordered[0] if len(ordered) == 1 else f"{ordered[0]} - {ordered[-1]}"
-        else:
-            affected_range = "all versions"
+        # Keep each distinct branch/range. A min/max rollup would mark gaps
+        # between release branches as affected.
+        ranges = list(dict.fromkeys(r.affected_range for r in rows if r.affected_range))
+        affected_range = "; ".join(ranges) if ranges else "all versions"
 
         fixed_versions = sorted({r.fixed_version for r in rows if r.fixed_version}, key=_version_sort_key)
 

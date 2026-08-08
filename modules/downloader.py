@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from urllib.parse import urlparse
 
 import requests
@@ -22,7 +23,13 @@ class Downloader:
     def __init__(self, timeout: int, max_retries: int, backoff_factor: float, user_agent: str):
         self.timeout = timeout
         self._seen_urls: set[str] = set()
-        self.session = requests.Session()
+        self._seen_urls_lock = threading.Lock()
+        self._local = threading.local()
+        self.user_agent = user_agent
+
+    def _build_session(self) -> requests.Session:
+        """Create a session for one worker thread."""
+        session = requests.Session()
         retry = Retry(
             total=max_retries,
             backoff_factor=backoff_factor,
@@ -31,15 +38,23 @@ class Downloader:
             raise_on_status=False,
         )
         adapter = HTTPAdapter(max_retries=retry)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        self.session.headers.update(
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update(
             {
-                "User-Agent": user_agent,
+                "User-Agent": self.user_agent,
                 "Accept-Encoding": "gzip, deflate",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             }
         )
+        return session
+
+    def _session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = self._build_session()
+            self._local.session = session
+        return session
 
     @staticmethod
     def is_valid_url(url: str) -> bool:
@@ -55,13 +70,14 @@ class Downloader:
         if not self.is_valid_url(url):
             logger.warning("Skipping invalid URL: %s", url)
             return None
-        if url in self._seen_urls:
-            logger.info("Skipping duplicate URL in this run: %s", url)
-            return None
-        self._seen_urls.add(url)
+        with self._seen_urls_lock:
+            if url in self._seen_urls:
+                logger.info("Skipping duplicate URL in this run: %s", url)
+                return None
+            self._seen_urls.add(url)
 
         try:
-            response = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+            response = self._session().get(url, timeout=self.timeout, allow_redirects=True)
             response.raise_for_status()
             content_type = response.headers.get("Content-Type", "")
             if "text/html" not in content_type and "application/xhtml" not in content_type and content_type:

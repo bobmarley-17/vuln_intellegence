@@ -51,7 +51,9 @@ class MitreClient:
                 if status != "affected":
                     continue  # "unaffected"/"unknown" rows aren't patch-relevant here
                 version = version_entry.get("version")
-                fixed = version_entry.get("lessThan") or version_entry.get("lessThanOrEqual")
+                # ``lessThanOrEqual`` is an inclusive vulnerable bound, not
+                # a fixed release.
+                fixed = version_entry.get("lessThan")
                 # "0"/"*" are CVE JSON 5 sentinels for "no explicit lower bound",
                 # not real version numbers - don't surface them as an affected version.
                 affected_range = version if version not in (None, "0", "*", "") else None

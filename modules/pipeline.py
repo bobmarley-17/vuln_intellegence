@@ -60,6 +60,10 @@ class Pipeline:
                 continue
             seen.add(url)
             urls.append(url)
+        for url in self.cache.get_source_urls():
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
         return urls
 
     def run(self) -> dict:
@@ -117,8 +121,11 @@ class Pipeline:
                     article = future.result()
                     if article:
                         articles.append(article)
+                    else:
+                        self.cache.mark_source_failed(url)
                 except Exception:
                     logger.exception("Unhandled error processing %s", url)
+                    self.cache.mark_source_failed(url)
         return articles
 
     def _download_one(self, url: str) -> Article | None:
