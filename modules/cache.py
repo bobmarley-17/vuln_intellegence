@@ -52,9 +52,48 @@ CREATE TABLE IF NOT EXISTS source_urls (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    scan_time TEXT NOT NULL,
+    duration_seconds REAL,
+    status TEXT NOT NULL,
+    articles_processed INTEGER NOT NULL DEFAULT 0,
+    cves_found INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES source_urls(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_article_cves_cve ON article_cves(cve_id);
 CREATE INDEX IF NOT EXISTS idx_source_urls_status ON source_urls(status);
+CREATE INDEX IF NOT EXISTS idx_scan_history_source ON scan_history(source_id);
 """
+
+# Columns added after the original source_urls table shipped. Added via
+# migration (ALTER TABLE) rather than the CREATE TABLE above so existing
+# databases pick them up without losing data.
+_SOURCE_MIGRATED_COLUMNS = {
+    "name": "TEXT",
+    "source_type": "TEXT NOT NULL DEFAULT 'security_blog'",
+    "vendor": "TEXT",
+    "polling_interval_minutes": "INTEGER",
+    "enabled": "INTEGER NOT NULL DEFAULT 1",
+    "last_error": "TEXT",
+    "last_articles_processed": "INTEGER",
+    "updated_at": "TEXT",
+}
+
+_SOURCE_LIST_COLUMNS = (
+    "id, name, url, source_type, vendor, polling_interval_minutes, enabled, "
+    "status, cves_found, last_articles_processed, last_checked, last_error, created_at, updated_at"
+)
+
+_UPDATABLE_SOURCE_FIELDS = {"name", "url", "source_type", "vendor", "polling_interval_minutes", "enabled"}
+
+
+class DuplicateSourceError(Exception):
+    """Raised when a source URL already exists in the database."""
 
 
 class VulnCache:
@@ -82,6 +121,14 @@ class VulnCache:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_source_columns(conn)
+
+    @staticmethod
+    def _migrate_source_columns(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(source_urls)").fetchall()}
+        for column, ddl in _SOURCE_MIGRATED_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE source_urls ADD COLUMN {column} {ddl}")
 
     # ------------------------------------------------------------------
     # Articles
@@ -126,14 +173,6 @@ class VulnCache:
                     "INSERT OR IGNORE INTO article_cves (article_id, cve_id) VALUES (?, ?)",
                     (article_id, cve_id),
                 )
-            conn.execute(
-                """
-                UPDATE source_urls
-                SET title = ?, status = ?, cves_found = ?, last_checked = ?
-                WHERE url = ?
-                """,
-                (article.title, "Processed", len(article.cves), article.fetched_at, article.url),
-            )
             return article_id
 
     def get_articles(self) -> list[dict]:
@@ -150,61 +189,156 @@ class VulnCache:
             return articles
 
     # ------------------------------------------------------------------
-    # Source URLs
+    # Sources
     # ------------------------------------------------------------------
-    def add_source_url(self, url: str) -> int | None:
-        """Adds a new source URL for processing. Returns the new row ID."""
+    def add_source(
+        self,
+        url: str,
+        name: str | None = None,
+        source_type: str = "security_blog",
+        vendor: str | None = None,
+        polling_interval_minutes: int | None = None,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a new source. Returns the new row ID, or raises
+        DuplicateSourceError if the URL is already tracked."""
         now = datetime.now(timezone.utc).isoformat()
         try:
             with self._connect() as conn:
                 cursor = conn.execute(
                     """
-                    INSERT INTO source_urls (url, status, last_checked, created_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO source_urls
+                        (url, name, source_type, vendor, polling_interval_minutes, enabled,
+                         status, last_checked, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (url, "Pending", now, now),
+                    (
+                        url,
+                        name,
+                        source_type,
+                        vendor,
+                        polling_interval_minutes,
+                        int(enabled),
+                        "Pending",
+                        now,
+                        now,
+                        now,
+                    ),
                 )
                 return cursor.lastrowid
-        except sqlite3.IntegrityError:
-            logger.warning("Source URL %s already exists in the database.", url)
-            return None
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateSourceError(f"Source URL already exists: {url}") from exc
 
     def get_all_sources(self) -> list[dict]:
-        """Returns all tracked source URLs."""
+        """Returns all tracked sources, newest first."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, url, title, status, cves_found, last_checked FROM source_urls ORDER BY created_at DESC"
+                f"SELECT {_SOURCE_LIST_COLUMNS} FROM source_urls ORDER BY created_at DESC"
             ).fetchall()
-        # sqlite3.Row objects act like dicts, so this is fine for jsonify
-        return [dict(r) for r in rows]
+        return [self._source_row_to_dict(r) for r in rows]
 
-    def get_source_urls(self) -> list[str]:
-        """Return user-managed URLs for inclusion in the next pipeline run."""
+    def get_enabled_sources(self) -> list[dict]:
+        """Sources the scanning engine should actually process."""
         with self._connect() as conn:
-            rows = conn.execute("SELECT url FROM source_urls ORDER BY id").fetchall()
-        return [row["url"] for row in rows]
+            rows = conn.execute(
+                f"SELECT {_SOURCE_LIST_COLUMNS} FROM source_urls WHERE enabled = 1 ORDER BY id"
+            ).fetchall()
+        return [self._source_row_to_dict(r) for r in rows]
 
-    def mark_source_failed(self, url: str) -> None:
-        """Record a failed fetch without affecting configured file-based URLs."""
+    def get_source(self, source_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {_SOURCE_LIST_COLUMNS} FROM source_urls WHERE id = ?", (source_id,)
+            ).fetchone()
+        return self._source_row_to_dict(row) if row is not None else None
+
+    def update_source(self, source_id: int, **fields) -> bool:
+        """Updates any of the user-editable source fields (only keys present
+        in `fields` are touched, so callers should omit fields they don't
+        want to change rather than passing None). Returns whether a row was
+        actually updated (False if the id doesn't exist). Raises
+        DuplicateSourceError if the new URL collides with another source."""
+        updates = {k: v for k, v in fields.items() if k in _UPDATABLE_SOURCE_FIELDS}
+        if not updates:
+            return False
+        if "enabled" in updates:
+            updates["enabled"] = int(bool(updates["enabled"]))
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{column} = ?" for column in updates)
+        params = [*updates.values(), source_id]
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(f"UPDATE source_urls SET {set_clause} WHERE id = ?", params)
+                return cursor.rowcount > 0
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateSourceError(f"Source URL already exists: {updates.get('url')}") from exc
+
+    def set_source_enabled(self, source_id: int, enabled: bool) -> bool:
+        return self.update_source(source_id, enabled=enabled)
+
+    def mark_source_scanning(self, source_id: int) -> None:
+        """Flag a source as actively being scanned."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE source_urls SET status = ?, last_checked = ? WHERE url = ?",
-                ("Failed", datetime.now(timezone.utc).isoformat(), url),
-            )
-
-    def mark_source_processing(self, url: str) -> None:
-        """Flag a source as actively being fetched/enriched."""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE source_urls SET status = ?, last_checked = ? WHERE url = ?",
-                ("Processing", datetime.now(timezone.utc).isoformat(), url),
+                "UPDATE source_urls SET status = ?, last_checked = ? WHERE id = ?",
+                ("Processing", datetime.now(timezone.utc).isoformat(), source_id),
             )
 
     def delete_source(self, source_id: int) -> None:
-        """Deletes a source URL by its ID."""
+        """Deletes a source by ID. Scan history rows are intentionally left
+        in place (no cascade) so past scan results remain available."""
         with self._connect() as conn:
             conn.execute("DELETE FROM source_urls WHERE id = ?", (source_id,))
-            logger.info("Deleted source URL with ID %d", source_id)
+            logger.info("Deleted source with ID %d", source_id)
+
+    @staticmethod
+    def _source_row_to_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["enabled"] = bool(d["enabled"])
+        return d
+
+    # ------------------------------------------------------------------
+    # Scan history
+    # ------------------------------------------------------------------
+    def record_scan(
+        self,
+        source_id: int,
+        status: str,
+        duration_seconds: float,
+        articles_processed: int,
+        cves_found: int,
+        error_message: str | None = None,
+    ) -> None:
+        """Appends a scan_history row and updates the source's summary
+        fields (status/cves_found/last_checked/last_error) to match."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_history
+                    (source_id, scan_time, duration_seconds, status, articles_processed,
+                     cves_found, error_message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (source_id, now, duration_seconds, status, articles_processed, cves_found, error_message, now),
+            )
+            conn.execute(
+                """
+                UPDATE source_urls
+                SET status = ?, cves_found = ?, last_articles_processed = ?, last_checked = ?,
+                    last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, cves_found, articles_processed, now, error_message, now, source_id),
+            )
+
+    def get_scan_history(self, source_id: int, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scan_history WHERE source_id = ? ORDER BY scan_time DESC LIMIT ?",
+                (source_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # CVEs

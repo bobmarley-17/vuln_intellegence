@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template, request
 
 from config import Config
-from modules.cache import VulnCache
+from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.models import AffectedProduct, EnrichedCVE
 from modules.normalizer import product_version_affected
 from modules.pipeline import Pipeline
+from modules.source_parsers import DEFAULT_SOURCE_TYPE, SOURCE_TYPES, test_connection as test_source_connection
 
 logger = logging.getLogger("vuln_intel.dashboard")
 
@@ -46,11 +48,13 @@ class PipelineRunner:
         with self._state_lock:
             return dict(self._state)
 
-    def start(self, job_name: str, fn, wait_if_busy: bool = True) -> bool:
+    def start(self, job_name: str, fn, wait_if_busy: bool = True, on_done=None) -> bool:
         """Start `fn` on a background thread under the run lock. If another
         job is already running and `wait_if_busy` is False, returns False
         without queuing. Otherwise the job is queued (or run immediately)
-        and this always returns True."""
+        and this always returns True. `on_done`, if given, always runs after
+        the job finishes (success or failure) -- used by the scheduler to
+        clear its own pending-source bookkeeping."""
         if not wait_if_busy and self._run_lock.locked():
             return False
 
@@ -78,12 +82,87 @@ class PipelineRunner:
                             job=None,
                             last_finished_at=datetime.now(timezone.utc).isoformat(),
                         )
+                    if on_done:
+                        try:
+                            on_done()
+                        except Exception:
+                            logger.exception("on_done callback failed for job '%s'", job_name)
 
         threading.Thread(target=target, daemon=True).start()
         return True
 
 
-def create_app(config: Config) -> Flask:
+class SourceScheduler:
+    """Background thread that fires a scan for any enabled source whose
+    polling_interval_minutes has elapsed since its last scan.
+
+    This only runs while the dashboard process is alive -- it is an
+    in-process convenience, not an OS-level cron. If the dashboard isn't
+    running, sources simply wait for the next manual scan or process start."""
+
+    def __init__(self, cache: VulnCache, runner: PipelineRunner, check_interval_seconds: int = 60):
+        self.cache = cache
+        self.runner = runner
+        self.check_interval_seconds = check_interval_seconds
+        self._pending: set[int] = set()
+        self._pending_lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _loop(self) -> None:
+        while not self._stop_event.wait(self.check_interval_seconds):
+            try:
+                self._tick()
+            except Exception:
+                logger.exception("Source scheduler tick failed")
+
+    def _tick(self) -> None:
+        now = datetime.now(timezone.utc)
+        for source in self.cache.get_enabled_sources():
+            interval = source.get("polling_interval_minutes")
+            if not interval or not self._is_due(source, now, interval):
+                continue
+            self._schedule(source)
+
+    @staticmethod
+    def _is_due(source: dict, now: datetime, interval_minutes: int) -> bool:
+        last_checked = source.get("last_checked")
+        if not last_checked:
+            return True
+        try:
+            last = datetime.fromisoformat(last_checked)
+        except ValueError:
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return now - last >= timedelta(minutes=interval_minutes)
+
+    def _schedule(self, source: dict) -> None:
+        source_id = source["id"]
+        with self._pending_lock:
+            if source_id in self._pending:
+                return  # already queued/running from a previous tick
+            self._pending.add(source_id)
+
+        def clear_pending():
+            with self._pending_lock:
+                self._pending.discard(source_id)
+
+        label = source.get("name") or source["url"]
+        self.runner.start(
+            f"Scheduled scan: {label}",
+            lambda: self.runner.pipeline.run_single(source_id),
+            wait_if_busy=True,
+            on_done=clear_pending,
+        )
+
+
+def create_app(config: Config, debug: bool = False) -> Flask:
     app = Flask(
         __name__,
         template_folder=str(DASHBOARD_DIR / "templates"),
@@ -91,6 +170,13 @@ def create_app(config: Config) -> Flask:
     )
     cache = VulnCache(config.cache_db_path, ttl_hours=config.cache_ttl_hours)
     runner = PipelineRunner(Pipeline(config))
+    scheduler = SourceScheduler(cache, runner)
+    # Under the Werkzeug debug reloader, this module is imported once in the
+    # watcher process and once in the actual worker (WERKZEUG_RUN_MAIN=true);
+    # only start the background scheduler in the process that will serve
+    # requests, or it ends up running twice.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        scheduler.start()
 
     @app.route("/")
     def index():
@@ -226,29 +312,140 @@ def create_app(config: Config) -> Flask:
             sources.update(_source_sites(c))
         return jsonify({"vendors": vendors, "products": products, "sources": sorted(sources)})
 
+    @app.route("/api/source-types")
+    def api_source_types():
+        return jsonify({"source_types": list(SOURCE_TYPES)})
+
     @app.route("/api/sources", methods=["GET"])
     def api_get_sources():
-        sources = cache.get_all_sources()
-        return jsonify(sources)
+        return jsonify(cache.get_all_sources())
 
     @app.route("/api/sources", methods=["POST"])
     def api_add_source():
         data = request.get_json(silent=True) or {}
         url = str(data.get("url", "")).strip()
+        name = (str(data.get("name") or "")).strip() or None
+        source_type = (str(data.get("source_type") or DEFAULT_SOURCE_TYPE)).strip()
+        vendor = (str(data.get("vendor") or "")).strip() or None
+        enabled = bool(data.get("enabled", True))
+
         if not Downloader.is_valid_url(url):
             return jsonify({"error": "Invalid URL provided"}), 400
+        if source_type not in SOURCE_TYPES:
+            return jsonify({"error": f"source_type must be one of: {', '.join(SOURCE_TYPES)}"}), 400
+        ok, polling_interval_minutes = _parse_polling_interval(data.get("polling_interval_minutes"))
+        if not ok:
+            return jsonify({"error": "polling_interval_minutes must be a positive number of minutes"}), 400
 
-        source_id = cache.add_source_url(url)
-        if source_id is None:
-            return jsonify({"error": "URL already exists"}), 409
+        try:
+            source_id = cache.add_source(
+                url,
+                name=name,
+                source_type=source_type,
+                vendor=vendor,
+                polling_interval_minutes=polling_interval_minutes,
+                enabled=enabled,
+            )
+        except DuplicateSourceError:
+            return jsonify({"error": "A source with this URL already exists"}), 409
 
-        runner.start(f"Processing source: {url}", lambda: runner.pipeline.run_single(url))
-        return jsonify({"message": "Source URL added; processing in the background", "id": source_id}), 201
+        if enabled:
+            runner.start(f"Processing source: {name or url}", lambda: runner.pipeline.run_single(source_id))
+        return jsonify({"message": "Source added; processing in the background", "id": source_id, "source": cache.get_source(source_id)}), 201
+
+    @app.route("/api/sources/<int:source_id>", methods=["GET"])
+    def api_get_source(source_id):
+        source = cache.get_source(source_id)
+        if source is None:
+            return jsonify({"error": "Source not found"}), 404
+        return jsonify(source)
+
+    @app.route("/api/sources/<int:source_id>", methods=["PUT"])
+    def api_update_source(source_id):
+        if cache.get_source(source_id) is None:
+            return jsonify({"error": "Source not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        updates: dict = {}
+
+        if "name" in data:
+            updates["name"] = (str(data.get("name") or "")).strip() or None
+        if "url" in data:
+            url = str(data.get("url", "")).strip()
+            if not Downloader.is_valid_url(url):
+                return jsonify({"error": "Invalid URL provided"}), 400
+            updates["url"] = url
+        if "source_type" in data:
+            source_type = (str(data.get("source_type") or "")).strip()
+            if source_type not in SOURCE_TYPES:
+                return jsonify({"error": f"source_type must be one of: {', '.join(SOURCE_TYPES)}"}), 400
+            updates["source_type"] = source_type
+        if "vendor" in data:
+            updates["vendor"] = (str(data.get("vendor") or "")).strip() or None
+        if "polling_interval_minutes" in data:
+            ok, polling_interval_minutes = _parse_polling_interval(data.get("polling_interval_minutes"))
+            if not ok:
+                return jsonify({"error": "polling_interval_minutes must be a positive number of minutes"}), 400
+            updates["polling_interval_minutes"] = polling_interval_minutes
+        if "enabled" in data:
+            updates["enabled"] = bool(data.get("enabled"))
+
+        try:
+            cache.update_source(source_id, **updates)
+        except DuplicateSourceError:
+            return jsonify({"error": "A source with this URL already exists"}), 409
+        return jsonify({"message": "Source updated", "source": cache.get_source(source_id)})
 
     @app.route("/api/sources/<int:source_id>", methods=["DELETE"])
     def api_delete_source(source_id):
         cache.delete_source(source_id)
         return jsonify({"message": "Source deleted successfully"}), 200
+
+    @app.route("/api/sources/<int:source_id>/enable", methods=["POST"])
+    def api_enable_source(source_id):
+        if not cache.set_source_enabled(source_id, True):
+            return jsonify({"error": "Source not found"}), 404
+        return jsonify({"message": "Source enabled", "source": cache.get_source(source_id)})
+
+    @app.route("/api/sources/<int:source_id>/disable", methods=["POST"])
+    def api_disable_source(source_id):
+        if not cache.set_source_enabled(source_id, False):
+            return jsonify({"error": "Source not found"}), 404
+        return jsonify({"message": "Source disabled", "source": cache.get_source(source_id)})
+
+    @app.route("/api/sources/<int:source_id>/scan", methods=["POST"])
+    def api_scan_source(source_id):
+        source = cache.get_source(source_id)
+        if source is None:
+            return jsonify({"error": "Source not found"}), 404
+        if not source["enabled"]:
+            return jsonify({"error": "Source is disabled; enable it before scanning"}), 400
+
+        label = source.get("name") or source["url"]
+        started = runner.start(f"Scanning: {label}", lambda: runner.pipeline.run_single(source_id), wait_if_busy=False)
+        if not started:
+            return jsonify({"error": "A scan or pipeline job is already running"}), 409
+        return jsonify({"message": "Scan started"}), 202
+
+    @app.route("/api/sources/<int:source_id>/history")
+    def api_source_history(source_id):
+        if cache.get_source(source_id) is None:
+            return jsonify({"error": "Source not found"}), 404
+        return jsonify(cache.get_scan_history(source_id))
+
+    @app.route("/api/sources/test", methods=["POST"])
+    def api_test_source():
+        """Connection test usable both before a source is saved (Add modal)
+        and against an already-saved one (Edit modal)."""
+        data = request.get_json(silent=True) or {}
+        url = str(data.get("url", "")).strip()
+        source_type = (str(data.get("source_type") or DEFAULT_SOURCE_TYPE)).strip()
+        if not Downloader.is_valid_url(url):
+            return jsonify({"ok": False, "message": "Unable to Reach URL", "detail": "That is not a valid http(s) URL."})
+        if source_type not in SOURCE_TYPES:
+            return jsonify({"error": f"source_type must be one of: {', '.join(SOURCE_TYPES)}"}), 400
+        result = test_source_connection(url, source_type, timeout=config.request_timeout, user_agent=config.user_agent)
+        return jsonify(result)
 
     @app.route("/api/pipeline/status")
     def api_pipeline_status():
@@ -262,6 +459,20 @@ def create_app(config: Config) -> Flask:
         return jsonify({"message": "Pipeline run started"}), 202
 
     return app
+
+
+def _parse_polling_interval(raw) -> tuple[bool, int | None]:
+    """Returns (ok, value). `raw` may be missing/None/'' (no auto-scan) or a
+    positive integer number of minutes."""
+    if raw in (None, ""):
+        return True, None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return False, None
+    if value <= 0:
+        return False, None
+    return True, value
 
 
 def _apply_filters(cves: list[EnrichedCVE], args) -> list[EnrichedCVE]:

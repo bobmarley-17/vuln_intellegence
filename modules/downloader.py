@@ -58,6 +58,14 @@ class Downloader:
             self._local.session = session
         return session
 
+    def reset_seen_urls(self) -> None:
+        """Clear the per-run dedup set. The Downloader instance is reused
+        across repeated scans (manual re-runs, the polling scheduler), so
+        without this a URL fetched successfully once would look like a
+        same-run duplicate -- and silently never be fetched again."""
+        with self._seen_urls_lock:
+            self._seen_urls.clear()
+
     @staticmethod
     def is_valid_url(url: str) -> bool:
         try:

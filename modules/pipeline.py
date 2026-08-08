@@ -1,21 +1,29 @@
-"""End-to-end orchestration: download articles -> extract CVEs -> enrich ->
-normalize -> summarize -> score -> persist to the SQLite cache."""
+"""End-to-end orchestration: scan configured sources -> extract CVEs ->
+enrich -> normalize -> summarize -> score -> persist to the SQLite cache.
+
+Sources are entirely database-driven (see modules.cache / modules.source_parsers)
+-- there is no hardcoded source list. security_urls.txt is only consulted
+once, to seed the database the first time it's empty, for backward
+compatibility with existing installs.
+"""
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlparse
 
 from config import Config
-from modules.cache import VulnCache
+from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.epss import EPSSClient
-from modules.extractor import ArticleExtractor
 from modules.kev import KEVClient
 from modules.mitre import MitreClient
 from modules.models import Article, EnrichedCVE
 from modules.nvd import NVDClient
 from modules.risk import RiskScorer
+from modules.source_parsers import SourceFetcher
 from modules.summarizer import TemplateSummarizer
 from modules.vendors import VendorIdentifier
 
@@ -32,7 +40,7 @@ class Pipeline:
             backoff_factor=config.backoff_factor,
             user_agent=config.user_agent,
         )
-        self.extractor = ArticleExtractor()
+        self.fetcher = SourceFetcher(self.downloader)
         self.nvd = NVDClient(
             api_key=config.nvd_api_key,
             timeout=config.request_timeout,
@@ -46,77 +54,139 @@ class Pipeline:
         self.vendor_identifier = VendorIdentifier()
         self.summarizer = TemplateSummarizer()
         self.risk_scorer = RiskScorer()
+        self._seed_sources_from_file()
 
-    def read_urls(self) -> list[str]:
+    def _seed_sources_from_file(self) -> None:
+        """One-time migration: if the sources table is empty and a legacy
+        security_urls.txt exists, import it as security_blog sources so
+        existing installs don't lose their configured sources. Once seeded,
+        the pipeline never reads the file again -- sources live in the DB."""
+        if self.cache.get_all_sources():
+            return
         path = Path(self.config.urls_file)
         if not path.exists():
-            logger.error("URLs file not found: %s", path)
-            return []
-        urls: list[str] = []
-        seen: set[str] = set()
+            return
+        seeded = 0
         for line in path.read_text(encoding="utf-8").splitlines():
             url = line.strip()
-            if not url or url in seen:
+            if not url:
                 continue
-            seen.add(url)
-            urls.append(url)
-        for url in self.cache.get_source_urls():
-            if url not in seen:
-                seen.add(url)
-                urls.append(url)
-        return urls
+            try:
+                self.cache.add_source(
+                    url,
+                    name=urlparse(url).netloc.replace("www.", ""),
+                    source_type="security_blog",
+                    enabled=True,
+                )
+                seeded += 1
+            except DuplicateSourceError:
+                pass
+        if seeded:
+            logger.info("Seeded %d source(s) from %s", seeded, path)
 
     def run(self) -> dict:
-        urls = self.read_urls()
-        logger.info("Loaded %d unique URLs from %s", len(urls), self.config.urls_file)
+        """Scan every enabled source and enrich whatever CVEs turn up."""
+        self.downloader.reset_seen_urls()
+        sources = self.cache.get_enabled_sources()
+        logger.info("Scanning %d enabled source(s)", len(sources))
 
-        articles = self._download_and_extract(urls)
-        logger.info("Successfully extracted %d articles", len(articles))
+        all_articles: list[Article] = []
+        with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
+            futures = [pool.submit(self._scan_source, source) for source in sources]
+            for future in as_completed(futures):
+                all_articles.extend(future.result())
 
-        cve_to_articles: dict[str, list[str]] = {}
-        for article in articles:
-            self.cache.save_article(article)
-            for cve_id in article.cves:
-                cve_to_articles.setdefault(cve_id, []).append(article.url)
-
-        logger.info("Found %d unique CVEs across all articles", len(cve_to_articles))
+        cve_to_articles = self._save_articles_and_index_cves(all_articles)
+        logger.info("Found %d unique CVEs across %d articles", len(cve_to_articles), len(all_articles))
 
         enriched_count, cached_count = self._enrich_cves(cve_to_articles)
-
         logger.info(
-            "Pipeline complete: %d articles, %d CVEs (%d freshly enriched, %d served from cache)",
-            len(articles),
+            "Pipeline complete: %d sources, %d articles, %d CVEs (%d freshly enriched, %d served from cache)",
+            len(sources),
+            len(all_articles),
             len(cve_to_articles),
             enriched_count,
             cached_count,
         )
         return {
+            "sources": len(sources),
+            "articles": len(all_articles),
+            "cves": len(cve_to_articles),
+            "enriched": enriched_count,
+            "cached": cached_count,
+        }
+
+    def run_single(self, source_id: int) -> dict:
+        """Scan exactly one source end-to-end. Used for the dashboard's
+        per-source 'Run Scan' action and to process a newly added source
+        without waiting for the next full run(). Refuses disabled sources,
+        same as a scheduled/full run would skip them."""
+        source = self.cache.get_source(source_id)
+        if source is None or not source["enabled"]:
+            return {"sources": 0, "articles": 0, "cves": 0, "enriched": 0, "cached": 0}
+
+        self.downloader.reset_seen_urls()
+        articles = self._scan_source(source)
+        cve_to_articles = self._save_articles_and_index_cves(articles)
+        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+        return {
+            "sources": 1,
             "articles": len(articles),
             "cves": len(cve_to_articles),
             "enriched": enriched_count,
             "cached": cached_count,
         }
 
-    def run_single(self, url: str) -> dict:
-        """Download, extract and enrich a single URL end-to-end. Used to
-        process a source added through the dashboard without waiting for the
-        next full `run()`."""
-        self.cache.mark_source_processing(url)
-        article = self._download_one(url)
-        if not article:
-            self.cache.mark_source_failed(url)
-            return {"articles": 0, "cves": 0, "enriched": 0, "cached": 0}
+    def _scan_source(self, source: dict) -> list[Article]:
+        """Fetch one source and record the outcome to scan_history,
+        regardless of success or failure -- a source that errors out must
+        never stop the rest of the scan."""
+        source_id = source["id"]
+        label = source.get("name") or source["url"]
+        self.cache.mark_source_scanning(source_id)
+        started = time.monotonic()
+        try:
+            articles = self.fetcher.fetch(source)
+        except Exception as exc:
+            logger.exception("Unhandled error scanning source %r (id=%s)", label, source_id)
+            self.cache.record_scan(
+                source_id,
+                status="Failed",
+                duration_seconds=time.monotonic() - started,
+                articles_processed=0,
+                cves_found=0,
+                error_message=str(exc),
+            )
+            return []
 
-        self.cache.save_article(article)
-        cve_to_articles = {cve_id: [url] for cve_id in article.cves}
-        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+        duration = time.monotonic() - started
+        cves_found = len({cve_id for article in articles for cve_id in article.cves})
+        if articles:
+            self.cache.record_scan(
+                source_id,
+                status="Processed",
+                duration_seconds=duration,
+                articles_processed=len(articles),
+                cves_found=cves_found,
+            )
+        else:
+            self.cache.record_scan(
+                source_id,
+                status="Failed",
+                duration_seconds=duration,
+                articles_processed=0,
+                cves_found=0,
+                error_message="No articles or feed items could be retrieved.",
+            )
+        return articles
 
-        return {
-            "articles": 1,
-            "cves": len(cve_to_articles),
-            "enriched": enriched_count,
-            "cached": cached_count,
-        }
+    def _save_articles_and_index_cves(self, articles: list[Article]) -> dict[str, list[str]]:
+        cve_to_articles: dict[str, list[str]] = {}
+        for article in articles:
+            self.cache.save_article(article)
+            for cve_id in article.cves:
+                cve_to_articles.setdefault(cve_id, []).append(article.url)
+        return cve_to_articles
 
     def _enrich_cves(self, cve_to_articles: dict[str, list[str]]) -> tuple[int, int]:
         enriched_count = 0
@@ -135,33 +205,6 @@ class Pipeline:
             except Exception:
                 logger.exception("Unhandled error enriching %s; skipping", cve_id)
         return enriched_count, cached_count
-
-    def _download_and_extract(self, urls: list[str]) -> list[Article]:
-        articles: list[Article] = []
-        with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
-            futures = {pool.submit(self._download_one, url): url for url in urls}
-            for future in as_completed(futures):
-                url = futures[future]
-                try:
-                    article = future.result()
-                    if article:
-                        articles.append(article)
-                    else:
-                        self.cache.mark_source_failed(url)
-                except Exception:
-                    logger.exception("Unhandled error processing %s", url)
-                    self.cache.mark_source_failed(url)
-        return articles
-
-    def _download_one(self, url: str) -> Article | None:
-        html = self.downloader.fetch(url)
-        if not html:
-            return None
-        try:
-            return self.extractor.extract(url, html)
-        except Exception:
-            logger.exception("Failed to extract article content from %s", url)
-            return None
 
     def _enrich_cve(self, cve_id: str, source_articles: list[str]) -> EnrichedCVE:
         logger.info("Enriching %s", cve_id)

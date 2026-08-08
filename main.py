@@ -48,7 +48,7 @@ def run_pipeline() -> None:
 def run_dashboard(host: str, port: int, debug: bool) -> None:
     from dashboard.app import create_app
 
-    app = create_app(config)
+    app = create_app(config, debug=debug)
     app.run(host=host, port=port, debug=debug, threaded=True)
 
 

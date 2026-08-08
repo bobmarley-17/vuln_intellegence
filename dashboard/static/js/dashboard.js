@@ -16,6 +16,24 @@ document.addEventListener('DOMContentLoaded', function () {
         source_site: '',
     };
 
+    const SOURCE_TYPE_LABELS = {
+        rss_feed: 'RSS Feed',
+        xml_feed: 'XML Feed',
+        security_blog: 'Security Blog',
+        vendor_advisory: 'Vendor Advisory',
+        json_api: 'JSON API',
+    };
+
+    const sourcesState = {
+        all: [],       // raw rows from the API
+        q: '',
+        type: '',
+        sortBy: 'name',
+        sortDir: 'asc',
+        page: 1,
+        pageSize: 10,
+    };
+
     function escapeHtml(value) {
         const element = document.createElement('div');
         element.textContent = value ?? '';
@@ -62,9 +80,25 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(`${API_BASE}/sources`)
             .then(response => response.json())
             .then(data => {
-                renderSourcesTable(data);
+                sourcesState.all = data;
+                renderSourcesTable();
             })
             .catch(error => console.error('Error fetching sources:', error));
+    }
+
+    function fetchSourceTypes() {
+        fetch(`${API_BASE}/source-types`)
+            .then(response => response.json())
+            .then(data => {
+                const select = document.getElementById('sources-type-filter');
+                (data.source_types || []).forEach(type => {
+                    const opt = document.createElement('option');
+                    opt.value = type;
+                    opt.textContent = SOURCE_TYPE_LABELS[type] || type;
+                    select.appendChild(opt);
+                });
+            })
+            .catch(error => console.error('Error fetching source types:', error));
     }
 
     function fetchCVEs() {
@@ -114,39 +148,124 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    function renderSourcesTable(sources) {
+    function getFilteredSortedSources() {
+        let rows = sourcesState.all;
+        if (sourcesState.type) {
+            rows = rows.filter(s => s.source_type === sourcesState.type);
+        }
+        if (sourcesState.q) {
+            const q = sourcesState.q.toLowerCase();
+            rows = rows.filter(s =>
+                (s.name || '').toLowerCase().includes(q) ||
+                (s.url || '').toLowerCase().includes(q) ||
+                (s.vendor || '').toLowerCase().includes(q)
+            );
+        }
+        const dir = sourcesState.sortDir === 'asc' ? 1 : -1;
+        const key = sourcesState.sortBy;
+        rows = [...rows].sort((a, b) => {
+            let av = a[key];
+            let bv = b[key];
+            if (key === 'name') {
+                av = av || a.url;
+                bv = bv || b.url;
+            }
+            if (av === null || av === undefined) av = '';
+            if (bv === null || bv === undefined) bv = '';
+            if (typeof av === 'string') av = av.toLowerCase();
+            if (typeof bv === 'string') bv = bv.toLowerCase();
+            if (av < bv) return -1 * dir;
+            if (av > bv) return 1 * dir;
+            return 0;
+        });
+        return rows;
+    }
+
+    function renderSourcesTable() {
         const tbody = document.getElementById('sources-table-body');
-        tbody.innerHTML = '';
-        if (sources.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center">No security sources have been added yet.</td></tr>';
+        const emptyState = document.getElementById('sources-empty-state');
+        const filtered = getFilteredSortedSources();
+
+        if (sourcesState.all.length === 0) {
+            tbody.innerHTML = '';
+            emptyState.classList.remove('d-none');
+            renderSourcesPagination(0);
             return;
         }
-        sources.forEach(source => {
+        emptyState.classList.add('d-none');
+
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">No sources match your search/filter.</td></tr>';
+            renderSourcesPagination(0);
+            return;
+        }
+
+        const totalPages = Math.max(Math.ceil(filtered.length / sourcesState.pageSize), 1);
+        sourcesState.page = Math.min(sourcesState.page, totalPages);
+        const start = (sourcesState.page - 1) * sourcesState.pageSize;
+        const pageRows = filtered.slice(start, start + sourcesState.pageSize);
+
+        tbody.innerHTML = '';
+        pageRows.forEach(source => {
             const row = document.createElement('tr');
-            const cvesFound = source.cves_found !== null ? source.cves_found : 'N/A';
-            const lastChecked = source.last_checked ? new Date(source.last_checked).toLocaleString() : 'Never';
+            if (!source.enabled) row.classList.add('source-row-disabled');
+
+            const statusKey = source.enabled ? (source.status || 'Pending').toLowerCase() : 'disabled';
+            const statusLabel = source.enabled ? (source.status || 'Pending') : 'Disabled';
+            const lastScan = source.last_checked ? new Date(source.last_checked).toLocaleString() : 'Never';
+            const typeLabel = SOURCE_TYPE_LABELS[source.source_type] || source.source_type;
+            const articles = source.last_articles_processed !== null && source.last_articles_processed !== undefined ? source.last_articles_processed : '—';
+            const cves = source.cves_found !== null && source.cves_found !== undefined ? source.cves_found : '—';
 
             row.innerHTML = `
-                <td><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.title || source.url)}</a></td>
-                <td><span class="badge bg-secondary">${escapeHtml(source.status)}</span></td>
-                <td class="text-center">${cvesFound}</td>
-                <td>${lastChecked}</td>
+                <td><strong>${escapeHtml(source.name || '(unnamed)')}</strong>${source.vendor ? `<div class="text-muted small">${escapeHtml(source.vendor)}</div>` : ''}</td>
+                <td><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer" class="source-url-cell" title="${escapeHtml(source.url)}">${escapeHtml(source.url)}</a></td>
+                <td><span class="source-type-badge">${escapeHtml(typeLabel)}</span></td>
+                <td class="text-center"><span class="source-status-pill status-${statusKey}">${escapeHtml(statusLabel)}</span></td>
+                <td>${lastScan}</td>
+                <td class="text-center">${articles}</td>
+                <td class="text-center">${cves}</td>
+                <td>${source.last_error ? `<span class="source-error-cell" title="${escapeHtml(source.last_error)}">${escapeHtml(source.last_error)}</span>` : '<span class="text-muted">&mdash;</span>'}</td>
                 <td>
-                    <button class="btn btn-sm btn-outline-danger delete-source-btn" data-id="${source.id}">
-                        <i class="bi bi-trash"></i>
-                    </button>
+                    <div class="source-actions">
+                        <button class="btn btn-outline-secondary" data-action="view" data-id="${source.id}" title="View"><i class="bi bi-eye"></i></button>
+                        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#addSourceModal" data-source-id="${source.id}" title="Edit"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-outline-secondary" data-action="scan" data-id="${source.id}" title="Run Scan" ${!source.enabled ? 'disabled' : ''}><i class="bi bi-play-fill"></i></button>
+                        <button class="btn btn-outline-secondary" data-action="toggle" data-id="${source.id}" data-enabled="${source.enabled}" title="${source.enabled ? 'Disable' : 'Enable'}"><i class="bi ${source.enabled ? 'bi-toggle-on' : 'bi-toggle-off'}"></i></button>
+                        <button class="btn btn-outline-secondary" data-action="history" data-id="${source.id}" title="Scan History"><i class="bi bi-clock-history"></i></button>
+                        <button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>
+                    </div>
                 </td>
             `;
             tbody.appendChild(row);
         });
 
-        // Add event listeners for the new delete buttons
-        document.querySelectorAll('.delete-source-btn').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const sourceId = e.currentTarget.dataset.id;
-                deleteSource(sourceId);
-            });
-        });
+        renderSourcesPagination(filtered.length);
+    }
+
+    function renderSourcesPagination(total) {
+        const pagination = document.getElementById('sources-pagination');
+        pagination.innerHTML = '';
+        const totalPages = Math.ceil(total / sourcesState.pageSize);
+        if (totalPages <= 1) return;
+
+        const createPageItem = (text, pageNum, isDisabled = false, isActive = false) => {
+            const li = document.createElement('li');
+            li.className = `page-item ${isDisabled ? 'disabled' : ''} ${isActive ? 'active' : ''}`;
+            const a = document.createElement('a');
+            a.className = 'page-link';
+            a.href = '#';
+            a.textContent = text;
+            if (!isDisabled) a.dataset.page = pageNum;
+            li.appendChild(a);
+            return li;
+        };
+
+        pagination.appendChild(createPageItem('Previous', sourcesState.page - 1, sourcesState.page === 1));
+        for (let i = 1; i <= totalPages; i++) {
+            pagination.appendChild(createPageItem(i, i, false, i === sourcesState.page));
+        }
+        pagination.appendChild(createPageItem('Next', sourcesState.page + 1, sourcesState.page === totalPages));
     }
 
     function renderTable(cves) {
@@ -544,64 +663,364 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    function addSource() {
-        const urlInput = document.getElementById('source-url-input');
-        const url = urlInput.value.trim();
-        const alertEl = document.getElementById('add-source-alert');
-
-        if (!url) {
-            showAlert(alertEl, 'Please enter a URL.', 'danger');
-            return;
-        }
-
-        fetch(`${API_BASE}/sources`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: url })
-        })
-        .then(response => response.json().then(data => ({ status: response.status, body: data })))
-        .then(({ status, body }) => {
-            if (status === 201) {
-                showAlert(alertEl, 'Source added successfully! It will be processed shortly.', 'success');
-                urlInput.value = '';
-                fetchSources(); // Refresh the sources table
-                startStatusPolling();
-                setTimeout(() => {
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('addSourceModal'));
-                    modal.hide();
-                    alertEl.style.display = 'none';
-                }, 1500);
-            } else {
-                showAlert(alertEl, `Error: ${body.error || 'Could not add source.'}`, 'danger');
-            }
-        })
-        .catch(error => {
-            console.error('Error adding source:', error);
-            showAlert(alertEl, 'A network error occurred.', 'danger');
-        });
-    }
-
-    function deleteSource(sourceId) {
-        if (!confirm('Are you sure you want to delete this source?')) {
-            return;
-        }
-        fetch(`${API_BASE}/sources/${sourceId}`, { method: 'DELETE' })
-            .then(response => {
-                if (response.ok) {
-                    fetchSources(); // Refresh the table
-                } else {
-                    alert('Failed to delete source.');
-                }
-            });
-    }
-
     function showAlert(element, message, type) {
         element.className = `alert alert-${type}`;
         element.textContent = message;
         element.style.display = 'block';
     }
 
-    document.getElementById('add-source-submit-btn').addEventListener('click', addSource);
+    // --- Toast notifications ---
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        const icons = { success: 'bi-check-circle-fill', danger: 'bi-x-circle-fill', info: 'bi-info-circle-fill' };
+        const toastEl = document.createElement('div');
+        toastEl.className = `toast toast-${type}`;
+        toastEl.setAttribute('role', 'status');
+        toastEl.setAttribute('aria-live', 'polite');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="toast-header">
+                <i class="bi ${icons[type] || icons.info} me-2"></i>
+                <strong class="me-auto">${type === 'danger' ? 'Error' : type === 'success' ? 'Success' : 'Notice'}</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body">${escapeHtml(message)}</div>
+        `;
+        container.appendChild(toastEl);
+        const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+        toast.show();
+    }
+
+    // --- Add / Edit source form ---
+    function resetSourceForm() {
+        document.getElementById('addSourceModalLabel').textContent = 'Add Security Source';
+        document.getElementById('source-form-save-btn').textContent = 'Save';
+        document.getElementById('source-form-id').value = '';
+        document.getElementById('source-name-input').value = '';
+        document.getElementById('source-vendor-input').value = '';
+        document.getElementById('source-url-input').value = '';
+        document.getElementById('source-type-input').value = 'security_blog';
+        document.getElementById('source-interval-input').value = '';
+        document.getElementById('source-enabled-input').checked = true;
+        hideElement('test-connection-result');
+        hideElement('source-form-alert');
+    }
+
+    function openSourceFormForEdit(sourceId) {
+        const source = sourcesState.all.find(s => String(s.id) === String(sourceId));
+        if (!source) return;
+        document.getElementById('addSourceModalLabel').textContent = `Edit Source: ${source.name || source.url}`;
+        document.getElementById('source-form-save-btn').textContent = 'Save Changes';
+        document.getElementById('source-form-id').value = source.id;
+        document.getElementById('source-name-input').value = source.name || '';
+        document.getElementById('source-vendor-input').value = source.vendor || '';
+        document.getElementById('source-url-input').value = source.url || '';
+        document.getElementById('source-type-input').value = source.source_type || 'security_blog';
+        document.getElementById('source-interval-input').value = source.polling_interval_minutes || '';
+        document.getElementById('source-enabled-input').checked = !!source.enabled;
+        hideElement('test-connection-result');
+        hideElement('source-form-alert');
+    }
+
+    function hideElement(id) {
+        const el = document.getElementById(id);
+        el.classList.add('d-none');
+        el.innerHTML = '';
+    }
+
+    document.getElementById('addSourceModal').addEventListener('show.bs.modal', (event) => {
+        const trigger = event.relatedTarget;
+        const sourceId = trigger && trigger.dataset ? trigger.dataset.sourceId : null;
+        if (sourceId) {
+            openSourceFormForEdit(sourceId);
+        } else {
+            resetSourceForm();
+        }
+    });
+
+    function testSourceConnection() {
+        const url = document.getElementById('source-url-input').value.trim();
+        const sourceType = document.getElementById('source-type-input').value;
+        const resultEl = document.getElementById('test-connection-result');
+        const spinner = document.getElementById('test-connection-spinner');
+
+        if (!url) {
+            resultEl.className = 'alert alert-danger mt-3';
+            resultEl.textContent = 'Enter a URL first.';
+            resultEl.classList.remove('d-none');
+            return;
+        }
+
+        spinner.classList.remove('d-none');
+        resultEl.classList.add('d-none');
+        document.getElementById('test-connection-btn').disabled = true;
+
+        fetch(`${API_BASE}/sources/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, source_type: sourceType }),
+        })
+            .then(response => response.json())
+            .then(result => {
+                resultEl.className = `alert mt-3 ${result.ok ? 'alert-success' : 'alert-danger'}`;
+                resultEl.innerHTML = `<strong>${escapeHtml(result.message || (result.ok ? 'Connection Successful' : 'Connection Failed'))}</strong>${result.detail ? `<div class="small mt-1">${escapeHtml(result.detail)}</div>` : ''}`;
+                resultEl.classList.remove('d-none');
+            })
+            .catch(error => {
+                resultEl.className = 'alert alert-danger mt-3';
+                resultEl.textContent = `A network error occurred: ${error}`;
+                resultEl.classList.remove('d-none');
+            })
+            .finally(() => {
+                spinner.classList.add('d-none');
+                document.getElementById('test-connection-btn').disabled = false;
+            });
+    }
+
+    document.getElementById('test-connection-btn').addEventListener('click', testSourceConnection);
+
+    function saveSource() {
+        const alertEl = document.getElementById('source-form-alert');
+        const sourceId = document.getElementById('source-form-id').value;
+        const url = document.getElementById('source-url-input').value.trim();
+        if (!url) {
+            showAlert(alertEl, 'Please enter a source URL.', 'danger');
+            return;
+        }
+
+        const payload = {
+            name: document.getElementById('source-name-input').value.trim(),
+            vendor: document.getElementById('source-vendor-input').value.trim(),
+            url,
+            source_type: document.getElementById('source-type-input').value,
+            polling_interval_minutes: document.getElementById('source-interval-input').value || null,
+            enabled: document.getElementById('source-enabled-input').checked,
+        };
+
+        const saveBtn = document.getElementById('source-form-save-btn');
+        saveBtn.disabled = true;
+
+        const request = sourceId
+            ? fetch(`${API_BASE}/sources/${sourceId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+            : fetch(`${API_BASE}/sources`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+
+        request
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status === 200 || status === 201) {
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('addSourceModal'));
+                    if (modal) modal.hide();
+                    showToast(sourceId ? 'Source updated.' : 'Source added; scanning in the background.', 'success');
+                    fetchSources();
+                    fetchSourceTypes();
+                    if (!sourceId) startStatusPolling();
+                } else {
+                    showAlert(alertEl, body.error || 'Could not save source.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving source:', error);
+                showAlert(alertEl, 'A network error occurred.', 'danger');
+            })
+            .finally(() => {
+                saveBtn.disabled = false;
+            });
+    }
+
+    document.getElementById('source-form-save-btn').addEventListener('click', saveSource);
+
+    // --- View source ---
+    function viewSource(sourceId) {
+        const source = sourcesState.all.find(s => String(s.id) === String(sourceId));
+        if (!source) return;
+        document.getElementById('viewSourceModalLabel').textContent = source.name || source.url;
+        const typeLabel = SOURCE_TYPE_LABELS[source.source_type] || source.source_type;
+        document.getElementById('view-source-body').innerHTML = `
+            <dl class="detail-kv">
+                <dt>Name</dt><dd>${escapeHtml(source.name || 'Not set')}</dd>
+                <dt>URL</dt><dd><a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.url)}</a></dd>
+                <dt>Type</dt><dd>${escapeHtml(typeLabel)}</dd>
+                <dt>Vendor</dt><dd>${escapeHtml(source.vendor || 'Not set')}</dd>
+                <dt>Enabled</dt><dd>${source.enabled ? 'Yes' : 'No'}</dd>
+                <dt>Polling Interval</dt><dd>${source.polling_interval_minutes ? `Every ${source.polling_interval_minutes} minute(s)` : 'Manual scans only'}</dd>
+                <dt>Status</dt><dd><span class="source-status-pill status-${(source.status || 'pending').toLowerCase()}">${escapeHtml(source.status || 'Pending')}</span></dd>
+                <dt>Last Scan</dt><dd>${source.last_checked ? new Date(source.last_checked).toLocaleString() : 'Never'}</dd>
+                <dt>Articles (last scan)</dt><dd>${source.last_articles_processed ?? 'N/A'}</dd>
+                <dt>CVEs Found</dt><dd>${source.cves_found ?? 'N/A'}</dd>
+                <dt>Last Error</dt><dd>${source.last_error ? escapeHtml(source.last_error) : 'None'}</dd>
+                <dt>Added</dt><dd>${source.created_at ? new Date(source.created_at).toLocaleString() : 'N/A'}</dd>
+            </dl>
+        `;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('viewSourceModal')).show();
+    }
+
+    // --- Scan history ---
+    function showSourceHistory(sourceId) {
+        const source = sourcesState.all.find(s => String(s.id) === String(sourceId));
+        document.getElementById('sourceHistoryModalLabel').textContent = `Scan History: ${source ? (source.name || source.url) : sourceId}`;
+        const tbody = document.getElementById('source-history-table-body');
+        const emptyState = document.getElementById('source-history-empty');
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center p-4"><div class="spinner-border spinner-border-sm text-accent" role="status"></div></td></tr>';
+        emptyState.classList.add('d-none');
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('sourceHistoryModal')).show();
+
+        fetch(`${API_BASE}/sources/${sourceId}/history`)
+            .then(response => response.json())
+            .then(history => {
+                if (!Array.isArray(history) || history.length === 0) {
+                    tbody.innerHTML = '';
+                    emptyState.classList.remove('d-none');
+                    return;
+                }
+                tbody.innerHTML = history.map(scan => `
+                    <tr>
+                        <td>${scan.scan_time ? new Date(scan.scan_time).toLocaleString() : 'N/A'}</td>
+                        <td class="text-center"><span class="source-status-pill status-${(scan.status || '').toLowerCase()}">${escapeHtml(scan.status || 'Unknown')}</span></td>
+                        <td class="text-center">${scan.duration_seconds !== null && scan.duration_seconds !== undefined ? `${scan.duration_seconds.toFixed(2)}s` : 'N/A'}</td>
+                        <td class="text-center">${scan.articles_processed ?? 0}</td>
+                        <td class="text-center">${scan.cves_found ?? 0}</td>
+                        <td>${scan.error_message ? escapeHtml(scan.error_message) : '&mdash;'}</td>
+                    </tr>
+                `).join('');
+            })
+            .catch(error => {
+                console.error('Error loading scan history:', error);
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Failed to load scan history.</td></tr>';
+            });
+    }
+
+    // --- Run scan / enable / disable / delete ---
+    function runSourceScan(sourceId) {
+        fetch(`${API_BASE}/sources/${sourceId}/scan`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status === 202) {
+                    showToast('Scan started.', 'success');
+                    startStatusPolling();
+                } else {
+                    showToast(body.error || 'Could not start scan.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error starting scan:', error);
+                showToast('A network error occurred.', 'danger');
+            });
+    }
+
+    function toggleSourceEnabled(sourceId, currentlyEnabled) {
+        const endpoint = currentlyEnabled ? 'disable' : 'enable';
+        fetch(`${API_BASE}/sources/${sourceId}/${endpoint}`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status === 200) {
+                    showToast(currentlyEnabled ? 'Source disabled.' : 'Source enabled.', 'success');
+                    fetchSources();
+                } else {
+                    showToast(body.error || 'Could not update source.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error toggling source:', error);
+                showToast('A network error occurred.', 'danger');
+            });
+    }
+
+    let pendingDeleteSourceId = null;
+
+    function openDeleteSourceModal(sourceId) {
+        const source = sourcesState.all.find(s => String(s.id) === String(sourceId));
+        pendingDeleteSourceId = sourceId;
+        document.getElementById('delete-source-name').textContent = source ? (source.name || source.url) : 'this source';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('deleteSourceModal')).show();
+    }
+
+    document.getElementById('confirm-delete-source-btn').addEventListener('click', () => {
+        if (!pendingDeleteSourceId) return;
+        fetch(`${API_BASE}/sources/${pendingDeleteSourceId}`, { method: 'DELETE' })
+            .then(response => {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('deleteSourceModal'));
+                if (modal) modal.hide();
+                if (response.ok) {
+                    showToast('Source deleted.', 'success');
+                    fetchSources();
+                } else {
+                    showToast('Failed to delete source.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting source:', error);
+                showToast('A network error occurred.', 'danger');
+            })
+            .finally(() => {
+                pendingDeleteSourceId = null;
+            });
+    });
+
+    // --- Sources table: search / type filter / sort / pagination / row actions ---
+    let sourcesSearchTimeout;
+    document.getElementById('sources-search').addEventListener('keyup', () => {
+        clearTimeout(sourcesSearchTimeout);
+        sourcesSearchTimeout = setTimeout(() => {
+            sourcesState.q = document.getElementById('sources-search').value.trim();
+            sourcesState.page = 1;
+            renderSourcesTable();
+        }, 300);
+    });
+
+    document.getElementById('sources-type-filter').addEventListener('change', (e) => {
+        sourcesState.type = e.target.value;
+        sourcesState.page = 1;
+        renderSourcesTable();
+    });
+
+    document.getElementById('sourcesTable').querySelector('thead').addEventListener('click', (e) => {
+        const th = e.target.closest('th');
+        if (!th || !th.dataset.sort) return;
+        const field = th.dataset.sort;
+        if (sourcesState.sortBy === field) {
+            sourcesState.sortDir = sourcesState.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            sourcesState.sortBy = field;
+            sourcesState.sortDir = 'asc';
+        }
+        document.querySelectorAll('#sourcesTable thead th').forEach(header => {
+            header.classList.remove('sort-asc', 'sort-desc');
+            const icon = header.querySelector('.sort-icon');
+            if (icon) icon.innerHTML = '&#x2195;';
+        });
+        th.classList.add(sourcesState.sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+        const icon = th.querySelector('.sort-icon');
+        if (icon) icon.innerHTML = sourcesState.sortDir === 'asc' ? '&#x2191;' : '&#x2193;';
+        renderSourcesTable();
+    });
+
+    document.getElementById('sources-pagination').addEventListener('click', (e) => {
+        if (e.target.tagName === 'A' && e.target.dataset.page) {
+            e.preventDefault();
+            sourcesState.page = parseInt(e.target.dataset.page, 10);
+            renderSourcesTable();
+        }
+    });
+
+    document.getElementById('sources-table-body').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const { action, id } = btn.dataset;
+        if (action === 'view') viewSource(id);
+        else if (action === 'scan') runSourceScan(id);
+        else if (action === 'toggle') toggleSourceEnabled(id, btn.dataset.enabled === 'true');
+        else if (action === 'history') showSourceHistory(id);
+        else if (action === 'delete') openDeleteSourceModal(id);
+    });
 
     // --- Vulnerability checker ---
     const STATUS_LABELS = { vulnerable: 'Vulnerable', not_affected: 'Not Affected', unknown: 'Unknown' };
@@ -793,6 +1212,7 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchStats();
     fetchFilters();
     fetchCVEs();
+    fetchSourceTypes();
     fetchSources();
     setDynamicFooter();
     pollPipelineStatus(); // reflect status immediately (e.g. a run already in progress)

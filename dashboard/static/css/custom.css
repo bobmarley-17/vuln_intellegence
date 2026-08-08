@@ -369,6 +369,84 @@ th.sort-asc .sort-icon, th.sort-desc .sort-icon { color: var(--accent); opacity:
 .app-empty-state p { margin: 0; }
 
 /* ---------------------------------------------------------------------- */
+/* Security sources                                                        */
+/* ---------------------------------------------------------------------- */
+
+.source-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.source-status-pill.status-processed { background: rgba(12, 163, 12, 0.14); color: var(--low); }
+.source-status-pill.status-processing { background: rgba(42, 120, 214, 0.14); color: var(--accent); }
+.source-status-pill.status-pending { background: rgba(137, 135, 129, 0.18); color: var(--text-muted); }
+.source-status-pill.status-failed { background: rgba(208, 59, 59, 0.14); color: var(--critical); }
+.source-status-pill.status-disabled { background: rgba(137, 135, 129, 0.14); color: var(--text-muted); }
+
+.source-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.source-url-cell {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.source-error-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+  color: var(--critical);
+  font-size: 0.8rem;
+}
+
+.source-actions { display: flex; gap: 4px; justify-content: center; flex-wrap: nowrap; }
+.source-actions .btn { padding: 3px 7px; font-size: 0.85rem; line-height: 1; }
+
+tr.source-row-disabled { opacity: 0.55; }
+
+/* ---------------------------------------------------------------------- */
+/* Toasts                                                                   */
+/* ---------------------------------------------------------------------- */
+
+.toast {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.toast-header {
+  background: var(--surface-alt);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.toast.toast-success .toast-header i { color: var(--low); }
+.toast.toast-danger .toast-header i { color: var(--critical); }
+.toast.toast-info .toast-header i { color: var(--accent); }
+
+/* ---------------------------------------------------------------------- */
 /* CVE detail modal                                                        */
 /* ---------------------------------------------------------------------- */
 
