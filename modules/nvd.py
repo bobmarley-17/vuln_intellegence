@@ -110,8 +110,6 @@ class NVDClient:
         if not target.severity:
             for entry in metrics.get("cvssMetricV2", []):
                 target.severity = entry.get("baseSeverity")
-                if target.cvss_v3_score is None:
-                    target.cvss_v3_score = entry.get("cvssData", {}).get("baseScore")
                 break
 
     @staticmethod

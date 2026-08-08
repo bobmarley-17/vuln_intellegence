@@ -99,6 +99,31 @@ def create_app(config: Config) -> Flask:
             sources.update(_source_sites(c))
         return jsonify({"vendors": vendors, "products": products, "sources": sorted(sources)})
 
+    @app.route("/api/sources", methods=["GET"])
+    def api_get_sources():
+        sources = cache.get_all_sources()
+        return jsonify(sources)
+
+    @app.route("/api/sources", methods=["POST"])
+    def api_add_source():
+        data = request.get_json()
+        url = data.get("url", "").strip()
+        if not url or not url.startswith("http"):
+            return jsonify({"error": "Invalid URL provided"}), 400
+
+        source_id = cache.add_source_url(url)
+        if source_id is None:
+            return jsonify({"error": "URL already exists"}), 409
+
+        # In a real-world app, this would trigger a background job.
+        # For now, we just add it to the DB with "Pending" status.
+        return jsonify({"message": "Source URL added successfully", "id": source_id}), 201
+
+    @app.route("/api/sources/<int:source_id>", methods=["DELETE"])
+    def api_delete_source(source_id):
+        cache.delete_source(source_id)
+        return jsonify({"message": "Source deleted successfully"}), 200
+
     return app
 
 
