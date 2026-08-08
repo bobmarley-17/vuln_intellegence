@@ -49,7 +49,7 @@ def run_dashboard(host: str, port: int, debug: bool) -> None:
     from dashboard.app import create_app
 
     app = create_app(config)
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug, threaded=True)
 
 
 def main() -> None:

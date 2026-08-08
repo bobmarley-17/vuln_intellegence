@@ -22,6 +22,8 @@ class Downloader:
 
     def __init__(self, timeout: int, max_retries: int, backoff_factor: float, user_agent: str):
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
         self._seen_urls: set[str] = set()
         self._seen_urls_lock = threading.Lock()
         self._local = threading.local()
@@ -31,8 +33,8 @@ class Downloader:
         """Create a session for one worker thread."""
         session = requests.Session()
         retry = Retry(
-            total=max_retries,
-            backoff_factor=backoff_factor,
+            total=self.max_retries,
+            backoff_factor=self.backoff_factor,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "HEAD"],
             raise_on_status=False,

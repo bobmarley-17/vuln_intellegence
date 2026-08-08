@@ -304,20 +304,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     function fetchAndShowCveDetails(cveId) {
-        // Fetch full CVE details from the (hypothetical) detailed endpoint
-        // For now, we'll re-use the list data and find the matching CVE
-        // In a real app, you'd fetch `/api/cve/${cveId}`
-        const params = new URLSearchParams({ q: cveId, page_size: 1 });
-        const url = `${API_BASE}/cves?${params.toString()}`;
-        fetch(url)
-            .then(response => response.json())
-            .then(data => {
-                if (data.items && data.items.length > 0) {
-                    renderCveModal(data.items[0]);
-                } else {
-                    console.error('Could not find details for', cveId);
-                }
-            });
+        fetch(`${API_BASE}/cve/${encodeURIComponent(cveId)}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`CVE not found: ${cveId}`);
+                return response.json();
+            })
+            .then(cve => renderCveModal(cve))
+            .catch(error => console.error('Could not find details for', cveId, error));
     }
 
     function renderCveModal(cve) {
@@ -334,8 +327,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     <h5>Details</h5>
                     <ul class="list-unstyled">
                         <li><strong>Severity:</strong> <span class="badge badge-${cve.risk_level || 'LOW'}">${cve.risk_level || 'Not Available'}</span></li>
-                        <li><strong>Published:</strong> ${new Date(cve.published_date).toLocaleDateString()}</li>
-                        <li><strong>Last Modified:</strong> ${new Date(cve.modified_date).toLocaleDateString()}</li>
+                        <li><strong>Published:</strong> ${formatDate(cve.published_date)}</li>
+                        <li><strong>Last Modified:</strong> ${formatDate(cve.modified_date)}</li>
                         <li><strong>Vendor:</strong> ${na(cve.vendor)}</li>
                         <li><strong>Product:</strong> ${na(cve.product)}</li>
                         <li><strong>CWE:</strong> ${cve.cwe.length > 0 ? cve.cwe.join(', ') : 'N/A'}</li>
@@ -398,6 +391,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 showAlert(alertEl, 'Source added successfully! It will be processed shortly.', 'success');
                 urlInput.value = '';
                 fetchSources(); // Refresh the sources table
+                startStatusPolling();
                 setTimeout(() => {
                     const modal = bootstrap.Modal.getInstance(document.getElementById('addSourceModal'));
                     modal.hide();
@@ -435,10 +429,69 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('add-source-submit-btn').addEventListener('click', addSource);
 
+    // --- Pipeline run/status ---
+    let statusPollTimer = null;
+    let wasRunning = null; // null = unknown yet (avoids refreshing data on first page load)
+
+    function renderPipelineStatus(data) {
+        const el = document.getElementById('pipeline-status');
+        if (data.running) {
+            el.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span>${escapeHtml(data.job || 'Running')}`;
+        } else if (data.last_error) {
+            el.textContent = `Last run failed: ${data.last_error}`;
+        } else if (data.last_finished_at) {
+            const finished = new Date(data.last_finished_at);
+            const when = Number.isNaN(finished.getTime()) ? '' : ` (${finished.toLocaleTimeString()})`;
+            el.textContent = `Idle — last run finished${when}`;
+        } else {
+            el.textContent = 'Idle';
+        }
+    }
+
+    function pollPipelineStatus() {
+        fetch(`${API_BASE}/pipeline/status`)
+            .then(response => response.json())
+            .then(data => {
+                renderPipelineStatus(data);
+                if (data.running) {
+                    statusPollTimer = setTimeout(pollPipelineStatus, 2000);
+                } else {
+                    statusPollTimer = null;
+                    if (wasRunning) {
+                        // A job just finished: refresh data that may have changed.
+                        fetchStats();
+                        fetchCVEs();
+                        fetchFilters();
+                        fetchSources();
+                    }
+                }
+                wasRunning = data.running;
+            })
+            .catch(error => console.error('Error polling pipeline status:', error));
+    }
+
+    function startStatusPolling() {
+        if (statusPollTimer) return; // already polling
+        pollPipelineStatus();
+    }
+
+    document.getElementById('run-pipeline-btn').addEventListener('click', () => {
+        fetch(`${API_BASE}/pipeline/run`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status !== 202) {
+                    alert(body.error || 'Could not start pipeline run.');
+                }
+                startStatusPolling();
+            })
+            .catch(error => console.error('Error starting pipeline run:', error));
+    });
+
     // Initial data load
     fetchStats();
     fetchFilters();
     fetchCVEs();
     fetchSources();
     setDynamicFooter();
+    pollPipelineStatus(); // reflect status immediately (e.g. a run already in progress)
 });

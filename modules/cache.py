@@ -192,6 +192,14 @@ class VulnCache:
                 ("Failed", datetime.now(timezone.utc).isoformat(), url),
             )
 
+    def mark_source_processing(self, url: str) -> None:
+        """Flag a source as actively being fetched/enriched."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE source_urls SET status = ?, last_checked = ? WHERE url = ?",
+                ("Processing", datetime.now(timezone.utc).isoformat(), url),
+            )
+
     def delete_source(self, source_id: int) -> None:
         """Deletes a source URL by its ID."""
         with self._connect() as conn:
@@ -231,6 +239,13 @@ class VulnCache:
         with self._connect() as conn:
             rows = conn.execute("SELECT data FROM cves").fetchall()
         return [self._deserialize(json.loads(r["data"])) for r in rows]
+
+    def get_cve(self, cve_id: str) -> EnrichedCVE | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT data FROM cves WHERE cve_id = ?", (cve_id,)).fetchone()
+        if row is None:
+            return None
+        return self._deserialize(json.loads(row["data"]))
 
     @staticmethod
     def _serialize(cve: EnrichedCVE) -> dict:

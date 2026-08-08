@@ -81,6 +81,44 @@ class Pipeline:
 
         logger.info("Found %d unique CVEs across all articles", len(cve_to_articles))
 
+        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+
+        logger.info(
+            "Pipeline complete: %d articles, %d CVEs (%d freshly enriched, %d served from cache)",
+            len(articles),
+            len(cve_to_articles),
+            enriched_count,
+            cached_count,
+        )
+        return {
+            "articles": len(articles),
+            "cves": len(cve_to_articles),
+            "enriched": enriched_count,
+            "cached": cached_count,
+        }
+
+    def run_single(self, url: str) -> dict:
+        """Download, extract and enrich a single URL end-to-end. Used to
+        process a source added through the dashboard without waiting for the
+        next full `run()`."""
+        self.cache.mark_source_processing(url)
+        article = self._download_one(url)
+        if not article:
+            self.cache.mark_source_failed(url)
+            return {"articles": 0, "cves": 0, "enriched": 0, "cached": 0}
+
+        self.cache.save_article(article)
+        cve_to_articles = {cve_id: [url] for cve_id in article.cves}
+        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+
+        return {
+            "articles": 1,
+            "cves": len(cve_to_articles),
+            "enriched": enriched_count,
+            "cached": cached_count,
+        }
+
+    def _enrich_cves(self, cve_to_articles: dict[str, list[str]]) -> tuple[int, int]:
         enriched_count = 0
         cached_count = 0
         for cve_id, source_articles in cve_to_articles.items():
@@ -96,20 +134,7 @@ class Pipeline:
                 enriched_count += 1
             except Exception:
                 logger.exception("Unhandled error enriching %s; skipping", cve_id)
-
-        logger.info(
-            "Pipeline complete: %d articles, %d CVEs (%d freshly enriched, %d served from cache)",
-            len(articles),
-            len(cve_to_articles),
-            enriched_count,
-            cached_count,
-        )
-        return {
-            "articles": len(articles),
-            "cves": len(cve_to_articles),
-            "enriched": enriched_count,
-            "cached": cached_count,
-        }
+        return enriched_count, cached_count
 
     def _download_and_extract(self, urls: list[str]) -> list[Article]:
         articles: list[Article] = []

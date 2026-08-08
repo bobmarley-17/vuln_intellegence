@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,11 +15,71 @@ from config import Config
 from modules.cache import VulnCache
 from modules.downloader import Downloader
 from modules.models import EnrichedCVE
+from modules.pipeline import Pipeline
 
 logger = logging.getLogger("vuln_intel.dashboard")
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+class PipelineRunner:
+    """Runs pipeline jobs (full runs, single-source enrichments) on a
+    background thread, one at a time, and exposes their status for the
+    dashboard to poll."""
+
+    def __init__(self, pipeline: Pipeline):
+        self.pipeline = pipeline
+        self._run_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._state = {
+            "running": False,
+            "job": None,
+            "started_at": None,
+            "last_finished_at": None,
+            "last_result": None,
+            "last_error": None,
+        }
+
+    def status(self) -> dict:
+        with self._state_lock:
+            return dict(self._state)
+
+    def start(self, job_name: str, fn, wait_if_busy: bool = True) -> bool:
+        """Start `fn` on a background thread under the run lock. If another
+        job is already running and `wait_if_busy` is False, returns False
+        without queuing. Otherwise the job is queued (or run immediately)
+        and this always returns True."""
+        if not wait_if_busy and self._run_lock.locked():
+            return False
+
+        def target():
+            with self._run_lock:
+                with self._state_lock:
+                    self._state.update(
+                        running=True,
+                        job=job_name,
+                        started_at=datetime.now(timezone.utc).isoformat(),
+                        last_error=None,
+                    )
+                try:
+                    result = fn()
+                    with self._state_lock:
+                        self._state["last_result"] = result
+                except Exception as exc:
+                    logger.exception("Background job '%s' failed", job_name)
+                    with self._state_lock:
+                        self._state["last_error"] = str(exc)
+                finally:
+                    with self._state_lock:
+                        self._state.update(
+                            running=False,
+                            job=None,
+                            last_finished_at=datetime.now(timezone.utc).isoformat(),
+                        )
+
+        threading.Thread(target=target, daemon=True).start()
+        return True
 
 
 def create_app(config: Config) -> Flask:
@@ -27,6 +89,7 @@ def create_app(config: Config) -> Flask:
         static_folder=str(DASHBOARD_DIR / "static"),
     )
     cache = VulnCache(config.cache_db_path, ttl_hours=config.cache_ttl_hours)
+    runner = PipelineRunner(Pipeline(config))
 
     @app.route("/")
     def index():
@@ -89,6 +152,13 @@ def create_app(config: Config) -> Flask:
             }
         )
 
+    @app.route("/api/cve/<cve_id>")
+    def api_cve_detail(cve_id):
+        cve = cache.get_cve(cve_id.strip().upper())
+        if cve is None:
+            return jsonify({"error": "CVE not found"}), 404
+        return jsonify(_serialize(cve))
+
     @app.route("/api/filters")
     def api_filters():
         """Distinct values for populating filter dropdowns."""
@@ -116,14 +186,24 @@ def create_app(config: Config) -> Flask:
         if source_id is None:
             return jsonify({"error": "URL already exists"}), 409
 
-        # In a real-world app, this would trigger a background job.
-        # For now, we just add it to the DB with "Pending" status.
-        return jsonify({"message": "Source URL added successfully", "id": source_id}), 201
+        runner.start(f"Processing source: {url}", lambda: runner.pipeline.run_single(url))
+        return jsonify({"message": "Source URL added; processing in the background", "id": source_id}), 201
 
     @app.route("/api/sources/<int:source_id>", methods=["DELETE"])
     def api_delete_source(source_id):
         cache.delete_source(source_id)
         return jsonify({"message": "Source deleted successfully"}), 200
+
+    @app.route("/api/pipeline/status")
+    def api_pipeline_status():
+        return jsonify(runner.status())
+
+    @app.route("/api/pipeline/run", methods=["POST"])
+    def api_pipeline_run():
+        started = runner.start("Full pipeline run", runner.pipeline.run, wait_if_busy=False)
+        if not started:
+            return jsonify({"error": "A pipeline job is already running"}), 409
+        return jsonify({"message": "Pipeline run started"}), 202
 
     return app
 
