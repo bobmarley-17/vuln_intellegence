@@ -1,292 +1,240 @@
-(() => {
-  "use strict";
+document.addEventListener('DOMContentLoaded', function () {
+    const API_BASE = '/api';
+    let severityChart = null;
 
-  const state = {
-    page: 1,
-    pageSize: 25,
-    sortBy: "risk_score",
-    sortDir: "desc",
-  };
-  let searchDebounce = null;
-  let severityChart = null;
-  let vendorChart = null;
+    const state = {
+        page: 1,
+        pageSize: 25,
+        sortBy: 'risk_score',
+        sortDir: 'desc',
+        q: '',
+        severity: '',
+        vendor: '',
+        min_cvss: '',
+        min_epss: '',
+        kev_only: false,
+        source_site: '',
+    };
 
-  const el = (id) => document.getElementById(id);
-
-  function applyTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("vi-theme", theme);
-  }
-
-  function initTheme() {
-    const saved = localStorage.getItem("vi-theme");
-    const preferred = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    applyTheme(preferred);
-    el("themeToggle").addEventListener("click", () => {
-      const current = document.documentElement.getAttribute("data-theme");
-      applyTheme(current === "dark" ? "light" : "dark");
-    });
-  }
-
-  function buildQuery() {
-    const params = new URLSearchParams();
-    const q = el("searchInput").value.trim();
-    if (q) params.set("q", q);
-
-    const severity = el("filterSeverity").value;
-    if (severity) params.set("severity", severity);
-    const vendor = el("filterVendor").value;
-    if (vendor) params.set("vendor", vendor);
-    const product = el("filterProduct").value;
-    if (product) params.set("product", product);
-    const source = el("filterSource").value;
-    if (source) params.set("source_site", source);
-    const minCvss = el("filterMinCvss").value;
-    if (minCvss) params.set("min_cvss", minCvss);
-    const minEpss = el("filterMinEpss").value;
-    if (minEpss) params.set("min_epss", minEpss);
-    const publishedAfter = el("filterPublishedAfter").value;
-    if (publishedAfter) params.set("published_after", publishedAfter);
-    if (el("filterKev").checked) params.set("kev_only", "true");
-
-    params.set("sort_by", state.sortBy);
-    params.set("sort_dir", state.sortDir);
-    params.set("page", state.page);
-    params.set("page_size", state.pageSize);
-    return params.toString();
-  }
-
-  async function loadCves() {
-    const res = await fetch(`/api/cves?${buildQuery()}`);
-    const data = await res.json();
-    renderTable(data.items);
-    renderPagination(data.total, data.page, data.page_size);
-  }
-
-  function severityBadge(level) {
-    const cls = { Critical: "badge-critical", High: "badge-high", Medium: "badge-medium", Low: "badge-low" }[level] || "badge-low";
-    return `<span class="badge ${cls}">${level || "Low"}</span>`;
-  }
-
-  function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str ?? "";
-    return div.innerHTML;
-  }
-
-  function renderTable(items) {
-    const body = el("cveTableBody");
-    if (!items.length) {
-      body.innerHTML = `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:24px;">No CVEs match the current filters.</td></tr>`;
-      return;
+    function fetchStats() {
+        fetch(`${API_BASE}/stats`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('total-cves').textContent = data.total_cves;
+                document.getElementById('total-articles').textContent = data.total_articles;
+                document.getElementById('kev-count').textContent = data.kev_count;
+                document.getElementById('vendor-count').textContent = data.vendor_count;
+                renderSeverityChart(data.severity_counts);
+            })
+            .catch(error => console.error('Error fetching stats:', error));
     }
-    body.innerHTML = items
-      .map(
-        (c) => `
-      <tr data-cve="${escapeHtml(c.cve_id)}">
-        <td><strong>${escapeHtml(c.cve_id)}</strong></td>
-        <td>${severityBadge(c.risk_level)} ${c.risk_score ?? "-"}</td>
-        <td>${c.cvss_v3_score ?? "-"}</td>
-        <td>${c.epss_score != null ? (c.epss_score * 100).toFixed(1) + "%" : "-"}</td>
-        <td>${c.kev_listed ? '<span class="kev-yes">Yes</span>' : '<span class="kev-no">No</span>'}</td>
-        <td>${escapeHtml(c.vendor) || "-"}</td>
-        <td>${escapeHtml(c.product) || "-"}</td>
-        <td>${escapeHtml(c.affected_versions_display) || "-"}</td>
-        <td>${escapeHtml(c.fixed_versions_display) || "-"}</td>
-        <td>${c.published_date ? c.published_date.slice(0, 10) : "-"}</td>
-        <td class="summary-cell">${escapeHtml(c.summary)}</td>
-      </tr>`
-      )
-      .join("");
 
-    body.querySelectorAll("tr[data-cve]").forEach((row) => {
-      row.addEventListener("click", () => {
-        const cve = items.find((c) => c.cve_id === row.dataset.cve);
-        if (cve) showDetail(cve);
-      });
-    });
-  }
+    function fetchFilters() {
+        fetch(`${API_BASE}/filters`)
+            .then(response => response.json())
+            .then(data => {
+                populateDropdown('filter-vendor', data.vendors);
+                populateDropdown('filter-source', data.sources);
+            })
+            .catch(error => console.error('Error fetching filters:', error));
+    }
 
-  function showDetail(c) {
-    el("modalBody").innerHTML = `
-      <h3>${escapeHtml(c.cve_id)} ${severityBadge(c.risk_level)}</h3>
-      <p>${escapeHtml(c.summary)}</p>
-      <dl>
-        <dt>Vendor / Product</dt><dd>${escapeHtml(c.vendor)} / ${escapeHtml(c.product)}</dd>
-        <dt>Affected</dt><dd>${escapeHtml(c.affected_versions_display) || "Unknown"}</dd>
-        <dt>Fixed</dt><dd>${escapeHtml(c.fixed_versions_display) || "Not yet fixed"}</dd>
-        <dt>CVSS v3</dt><dd>${c.cvss_v3_score ?? "-"} (${escapeHtml(c.cvss_v3_vector) || "-"})</dd>
-        <dt>EPSS</dt><dd>${c.epss_score != null ? (c.epss_score * 100).toFixed(2) + "%" : "-"} (percentile ${c.epss_percentile != null ? (c.epss_percentile * 100).toFixed(1) + "%" : "-"})</dd>
-        <dt>KEV</dt><dd>${c.kev_listed ? `Yes — added ${c.kev_date_added || "-"}, due ${c.kev_due_date || "-"}` : "No"}</dd>
-        <dt>CWE</dt><dd>${(c.cwe || []).join(", ") || "-"}</dd>
-        <dt>Published</dt><dd>${c.published_date || "-"}</dd>
-        <dt>Modified</dt><dd>${c.modified_date || "-"}</dd>
-        <dt>Recommendation</dt><dd><strong>${escapeHtml(c.risk_recommendation)}</strong></dd>
-        <dt>Sources</dt><dd>${(c.source_articles || []).map((u) => `<a href="${u}" target="_blank" rel="noopener">${escapeHtml(new URL(u).hostname)}</a>`).join(", ")}</dd>
-        <dt>References</dt><dd>${(c.references || []).slice(0, 8).map((u) => `<a href="${u}" target="_blank" rel="noopener">link</a>`).join(", ")}</dd>
-      </dl>
-    `;
-    el("detailModal").classList.remove("hidden");
-  }
-
-  function renderPagination(total, page, pageSize) {
-    const totalPages = Math.max(Math.ceil(total / pageSize), 1);
-    el("pagination").innerHTML = `
-      <span>${total} CVEs — page ${page} of ${totalPages}</span>
-      <button id="prevPage" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
-      <button id="nextPage" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
-    `;
-    el("prevPage")?.addEventListener("click", () => {
-      state.page = Math.max(state.page - 1, 1);
-      loadCves();
-    });
-    el("nextPage")?.addEventListener("click", () => {
-      state.page = Math.min(state.page + 1, totalPages);
-      loadCves();
-    });
-  }
-
-  async function loadFilters() {
-    const res = await fetch("/api/filters");
-    const data = await res.json();
-    fillSelect("filterVendor", data.vendors);
-    fillSelect("filterProduct", data.products);
-    fillSelect("filterSource", data.sources);
-  }
-
-  function fillSelect(id, values) {
-    const select = el(id);
-    const placeholder = select.options[0];
-    select.innerHTML = "";
-    select.appendChild(placeholder);
-    values.forEach((v) => {
-      const opt = document.createElement("option");
-      opt.value = v;
-      opt.textContent = v;
-      select.appendChild(opt);
-    });
-  }
-
-  async function loadStats() {
-    const res = await fetch("/api/stats");
-    const data = await res.json();
-    renderStatTiles(data);
-    renderCharts(data);
-  }
-
-  function renderStatTiles(data) {
-    const tiles = [
-      ["Total Articles", data.total_articles],
-      ["Total CVEs", data.total_cves],
-      ["Critical", data.severity_counts.Critical],
-      ["High", data.severity_counts.High],
-      ["Medium", data.severity_counts.Medium],
-      ["Low", data.severity_counts.Low],
-      ["KEV Listed", data.kev_count],
-      ["Vendors", data.vendor_count],
-      ["Products", data.product_count],
-    ];
-    el("statsGrid").innerHTML = tiles
-      .map(([label, value]) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div></div>`)
-      .join("");
-  }
-
-  function chartTextColor() {
-    return getComputedStyle(document.documentElement).getPropertyValue("--text").trim();
-  }
-
-  function renderCharts(data) {
-    const textColor = chartTextColor();
-    Chart.defaults.color = textColor;
-    Chart.defaults.borderColor = "rgba(128,128,128,0.2)";
-
-    const sevCtx = el("severityChart");
-    const sevData = data.severity_counts;
-    if (severityChart) severityChart.destroy();
-    severityChart = new Chart(sevCtx, {
-      type: "doughnut",
-      data: {
-        labels: Object.keys(sevData),
-        datasets: [
-          {
-            data: Object.values(sevData),
-            backgroundColor: ["#b91c1c", "#d9730d", "#ca8a04", "#16794e"],
-          },
-        ],
-      },
-      options: { plugins: { legend: { position: "bottom" } } },
-    });
-
-    const vendorCtx = el("vendorChart");
-    if (vendorChart) vendorChart.destroy();
-    vendorChart = new Chart(vendorCtx, {
-      type: "bar",
-      data: {
-        labels: data.top_vendors.map((v) => v.vendor),
-        datasets: [{ label: "CVEs", data: data.top_vendors.map((v) => v.count), backgroundColor: "#2563eb" }],
-      },
-      options: {
-        indexAxis: "y",
-        plugins: { legend: { display: false } },
-        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } },
-      },
-    });
-  }
-
-  function bindToolbar() {
-    el("searchInput").addEventListener("input", () => {
-      clearTimeout(searchDebounce);
-      searchDebounce = setTimeout(() => {
-        state.page = 1;
-        loadCves();
-      }, 300);
-    });
-
-    ["filterSeverity", "filterVendor", "filterProduct", "filterSource", "filterMinCvss", "filterMinEpss", "filterPublishedAfter", "filterKev"].forEach(
-      (id) => {
-        el(id).addEventListener("change", () => {
-          state.page = 1;
-          loadCves();
+    function fetchCVEs() {
+        const params = new URLSearchParams({
+            page: state.page,
+            page_size: state.pageSize,
+            sort_by: state.sortBy,
+            sort_dir: state.sortDir,
+            q: state.q,
+            severity: state.severity,
+            vendor: state.vendor,
+            min_cvss: state.min_cvss,
+            min_epss: state.min_epss,
+            kev_only: state.kev_only,
+            source_site: state.source_site,
         });
-      }
-    );
 
-    el("resetFilters").addEventListener("click", () => {
-      el("searchInput").value = "";
-      el("filterSeverity").value = "";
-      el("filterVendor").value = "";
-      el("filterProduct").value = "";
-      el("filterSource").value = "";
-      el("filterMinCvss").value = "";
-      el("filterMinEpss").value = "";
-      el("filterPublishedAfter").value = "";
-      el("filterKev").checked = false;
-      state.page = 1;
-      loadCves();
-    });
+        const url = `${API_BASE}/cves?${params.toString()}`;
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                renderTable(data.items);
+                renderPagination(data.total, data.page, data.page_size);
+            })
+            .catch(error => console.error('Error fetching CVEs:', error));
+    }
 
-    document.querySelectorAll("th[data-sort]").forEach((th) => {
-      th.addEventListener("click", () => {
-        const sortBy = th.dataset.sort;
-        if (state.sortBy === sortBy) {
-          state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
-        } else {
-          state.sortBy = sortBy;
-          state.sortDir = "desc";
+    function populateDropdown(elementId, options) {
+        const select = document.getElementById(elementId);
+        select.innerHTML = '<option value="">All</option>'; // Reset
+        options.forEach(option => {
+            const opt = document.createElement('option');
+            opt.value = option;
+            opt.textContent = option;
+            select.appendChild(opt);
+        });
+    }
+
+    function renderTable(cves) {
+        const tbody = document.getElementById('cve-table-body');
+        tbody.innerHTML = '';
+        if (cves.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center">No CVEs found.</td></tr>';
+            return;
         }
-        loadCves();
-      });
+        cves.forEach(cve => {
+            const row = document.createElement('tr');
+            row.dataset.cveId = cve.cve_id; // For click events
+            row.innerHTML = `
+                <td>
+                    <a href="https://nvd.nist.gov/vuln/detail/${cve.cve_id}" target="_blank" class="cve-id-link">${cve.cve_id}</a>
+                    ${cve.kev_listed ? '<span class="badge bg-danger ms-1">KEV</span>' : ''}
+                </td>
+                <td>${cve.summary || cve.description.substring(0, 150) + '...' || 'No description'}</td>
+                <td class="text-center"><span class="badge badge-${cve.risk_level || 'LOW'}">${cve.risk_level || 'N/A'}</span></td>
+                <td class="text-center">${cve.risk_score !== null ? cve.risk_score.toFixed(2) : 'N/A'}</td>
+                <td>${cve.vendor || 'N/A'}</td>
+                <td>${new Date(cve.published_date).toLocaleDateString()}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    function renderPagination(total, page, pageSize) {
+        const pagination = document.getElementById('pagination');
+        pagination.innerHTML = '';
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) return;
+
+        const createPageItem = (text, pageNum, isDisabled = false, isActive = false) => {
+            const li = document.createElement('li');
+            li.className = `page-item ${isDisabled ? 'disabled' : ''} ${isActive ? 'active' : ''}`;
+            const a = document.createElement('a');
+            a.className = 'page-link';
+            a.href = '#';
+            a.textContent = text;
+            if (!isDisabled) {
+                a.dataset.page = pageNum;
+            }
+            li.appendChild(a);
+            return li;
+        };
+
+        pagination.appendChild(createPageItem('Previous', page - 1, page === 1));
+
+        // Simplified pagination logic
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= page - 2 && i <= page + 2)) {
+                pagination.appendChild(createPageItem(i, i, false, i === page));
+            } else if (i === page - 3 || i === page + 3) {
+                pagination.appendChild(createPageItem('...', 0, true));
+            }
+        }
+
+        pagination.appendChild(createPageItem('Next', page + 1, page === totalPages));
+    }
+
+    function renderSeverityChart(severityCounts) {
+        const ctx = document.getElementById('severityChart').getContext('2d');
+        const labels = Object.keys(severityCounts);
+        const data = Object.values(severityCounts);
+
+        if (severityChart) {
+            severityChart.destroy();
+        }
+
+        severityChart = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: [
+                        '#dc3545', // Critical
+                        '#fd7e14', // High
+                        '#ffc107', // Medium
+                        '#198754', // Low
+                    ],
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    title: {
+                        display: true,
+                        text: 'CVEs by Severity'
+                    }
+                }
+            }
+        });
+    }
+
+    function handleFilterChange() {
+        state.q = document.getElementById('search-input').value;
+        state.severity = document.getElementById('filter-severity').value;
+        state.vendor = document.getElementById('filter-vendor').value;
+        state.min_cvss = document.getElementById('filter-min-cvss').value;
+        state.min_epss = document.getElementById('filter-min-epss').value;
+        state.kev_only = document.getElementById('filter-kev').checked;
+        state.source_site = document.getElementById('filter-source').value;
+        state.page = 1; // Reset to first page on filter change
+        fetchCVEs();
+    }
+
+    // Event Listeners
+    document.getElementById('filter-btn').addEventListener('click', handleFilterChange);
+
+    document.getElementById('reset-btn').addEventListener('click', () => {
+        document.getElementById('filter-form').reset();
+        handleFilterChange();
     });
 
-    el("closeModal").addEventListener("click", () => el("detailModal").classList.add("hidden"));
-    el("detailModal").addEventListener("click", (e) => {
-      if (e.target.id === "detailModal") el("detailModal").classList.add("hidden");
+    document.getElementById('pagination').addEventListener('click', (e) => {
+        if (e.target.tagName === 'A' && e.target.dataset.page) {
+            e.preventDefault();
+            state.page = parseInt(e.target.dataset.page, 10);
+            fetchCVEs();
+        }
     });
-  }
 
-  document.addEventListener("DOMContentLoaded", async () => {
-    initTheme();
-    bindToolbar();
-    await Promise.all([loadFilters(), loadStats(), loadCves()]);
-  });
-})();
+    document.getElementById('cveTable').querySelector('thead').addEventListener('click', (e) => {
+        const th = e.target.closest('th');
+        if (th && th.dataset.sort) {
+            const sortField = th.dataset.sort;
+            if (state.sortBy === sortField) {
+                state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                state.sortBy = sortField;
+                state.sortDir = 'desc';
+            }
+            // Update sort indicators
+            document.querySelectorAll('#cveTable thead th').forEach(header => {
+                header.classList.remove('sort-asc', 'sort-desc');
+                const icon = header.querySelector('.sort-icon');
+                if (icon) icon.innerHTML = '&#x2195;';
+            });
+            th.classList.add(state.sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+            const icon = th.querySelector('.sort-icon');
+            if(icon) icon.innerHTML = state.sortDir === 'asc' ? '&#x2191;' : '&#x2193;';
+
+            fetchCVEs();
+        }
+    });
+
+    // Debounce search input
+    let searchTimeout;
+    document.getElementById('search-input').addEventListener('keyup', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            handleFilterChange();
+        }, 300);
+    });
+
+    // Initial data load
+    fetchStats();
+    fetchFilters();
+    fetchCVEs();
+});

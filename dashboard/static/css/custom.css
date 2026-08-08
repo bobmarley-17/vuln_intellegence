@@ -1,0 +1,41 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.sidebar {
+    background-color: #343a40;
+    color: white;
+}
+
+.stat-card {
+    border-left-width: 5px;
+    border-radius: .35rem;
+}
+
+.stat-card.border-left-primary { border-left-color: #4e73df; }
+.stat-card.border-left-success { border-left-color: #1cc88a; }
+.stat-card.border-left-info { border-left-color: #36b9cc; }
+.stat-card.border-left-warning { border-left-color: #f6c23e; }
+.stat-card.border-left-danger { border-left-color: #e74a3b; }
+
+.table-responsive {
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, 0.15);
+}
+
+.badge-CRITICAL { background-color: #dc3545; color: white; }
+.badge-HIGH { background-color: #fd7e14; color: white; }
+.badge-MEDIUM { background-color: #ffc107; color: black; }
+.badge-LOW { background-color: #198754; color: white; }
+
+.cve-id-link {
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: bold;
+}
+
+#cveTable tbody tr {
+    cursor: pointer;
+}
+
+#cveTable tbody tr:hover {
+    background-color: #f1f1f1;
+}
