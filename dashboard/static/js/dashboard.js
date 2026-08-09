@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', function () {
         q: '',
         severity: '',
         vendor: '',
+        product: '',
         min_cvss: '',
         min_epss: '',
         kev_only: false,
@@ -69,6 +70,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(response => response.json())
             .then(data => {
                 populateDropdown('filter-vendor', data.vendors);
+                populateDropdown('filter-product', data.products);
                 populateDropdown('filter-source', data.sources);
                 populateDatalist('checker-vendor-list', data.vendors);
                 populateDatalist('checker-product-list', data.products);
@@ -110,6 +112,7 @@ document.addEventListener('DOMContentLoaded', function () {
             q: state.q,
             severity: state.severity,
             vendor: state.vendor,
+            product: state.product,
             min_cvss: state.min_cvss,
             min_epss: state.min_epss,
             kev_only: state.kev_only,
@@ -396,6 +399,7 @@ document.addEventListener('DOMContentLoaded', function () {
         state.q = document.getElementById('search-input').value;
         state.severity = document.getElementById('filter-severity').value;
         state.vendor = document.getElementById('filter-vendor').value;
+        state.product = document.getElementById('filter-product').value;
         state.min_cvss = document.getElementById('filter-min-cvss').value;
         state.min_epss = document.getElementById('filter-min-epss').value;
         state.kev_only = document.getElementById('filter-kev').checked;
@@ -403,6 +407,47 @@ document.addEventListener('DOMContentLoaded', function () {
         state.page = 1; // Reset to first page on filter change
         fetchCVEs();
     }
+
+    // --- Cross-page navigation (KPI tiles, vendor/product drill-down) ---
+    function switchToTab(tabPaneId) {
+        const btn = document.querySelector(`[data-bs-target="#${tabPaneId}"]`);
+        if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
+    }
+
+    function goToOverviewFiltered(filters = {}) {
+        document.getElementById('search-input').value = '';
+        document.getElementById('filter-severity').value = '';
+        document.getElementById('filter-vendor').value = filters.vendor || '';
+        document.getElementById('filter-product').value = filters.product || '';
+        document.getElementById('filter-source').value = '';
+        document.getElementById('filter-min-cvss').value = '';
+        document.getElementById('filter-min-epss').value = '';
+        document.getElementById('filter-kev').checked = !!filters.kevOnly;
+
+        handleFilterChange();
+
+        const collapseEl = document.getElementById('filterCollapse');
+        if (filters.vendor || filters.product || filters.kevOnly) {
+            bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
+        }
+        switchToTab('tab-overview');
+    }
+
+    document.getElementById('stat-tile-cves').addEventListener('click', () => goToOverviewFiltered({}));
+    document.getElementById('stat-tile-kev').addEventListener('click', () => goToOverviewFiltered({ kevOnly: true }));
+    document.getElementById('stat-tile-articles').addEventListener('click', () => switchToTab('tab-articles'));
+    document.getElementById('stat-tile-vendors').addEventListener('click', () => switchToTab('tab-vendors'));
+    document.getElementById('stat-tile-products').addEventListener('click', () => switchToTab('tab-products'));
+
+    // role="button" tiles should also respond to keyboard activation.
+    document.querySelectorAll('.stat-tile-clickable[role="button"]').forEach(el => {
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                el.click();
+            }
+        });
+    });
 
     // Event Listeners
     document.getElementById('filter-btn').addEventListener('click', handleFilterChange);
@@ -1022,6 +1067,250 @@ document.addEventListener('DOMContentLoaded', function () {
         else if (action === 'delete') openDeleteSourceModal(id);
     });
 
+    // --- Articles page ---
+    const articlesState = { page: 1, pageSize: 25, sortBy: 'fetched_at', sortDir: 'desc', q: '' };
+
+    function fetchArticles() {
+        const params = new URLSearchParams({
+            page: articlesState.page,
+            page_size: articlesState.pageSize,
+            sort_by: articlesState.sortBy,
+            sort_dir: articlesState.sortDir,
+            q: articlesState.q,
+        });
+        fetch(`${API_BASE}/articles?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                renderArticlesTable(data.items);
+                renderGenericPagination('articles-pagination', data.total, data.page, data.page_size, (page) => {
+                    articlesState.page = page;
+                    fetchArticles();
+                });
+            })
+            .catch(error => console.error('Error fetching articles:', error));
+    }
+
+    function renderArticlesTable(articles) {
+        const tbody = document.getElementById('articles-table-body');
+        const emptyState = document.getElementById('articles-empty-state');
+        tbody.innerHTML = '';
+        if (articles.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        articles.forEach(article => {
+            const row = document.createElement('tr');
+            const cveCount = (article.cves || []).length;
+            row.innerHTML = `
+                <td><a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.title || article.url)}</a></td>
+                <td class="text-muted">${escapeHtml(article.site_name || 'N/A')}</td>
+                <td>${formatDate(article.published_date)}</td>
+                <td>${formatDate(article.fetched_at)}</td>
+                <td class="text-center">${cveCount > 0 ? `<span class="badge bg-secondary">${cveCount}</span>` : '<span class="text-muted">0</span>'}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    function renderGenericPagination(elementId, total, page, pageSize, onPageClick) {
+        const pagination = document.getElementById(elementId);
+        pagination.innerHTML = '';
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) return;
+
+        const createPageItem = (text, pageNum, isDisabled = false, isActive = false) => {
+            const li = document.createElement('li');
+            li.className = `page-item ${isDisabled ? 'disabled' : ''} ${isActive ? 'active' : ''}`;
+            const a = document.createElement('a');
+            a.className = 'page-link';
+            a.href = '#';
+            a.textContent = text;
+            if (!isDisabled) {
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    onPageClick(pageNum);
+                });
+            }
+            li.appendChild(a);
+            return li;
+        };
+
+        pagination.appendChild(createPageItem('Previous', page - 1, page === 1));
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= page - 2 && i <= page + 2)) {
+                pagination.appendChild(createPageItem(i, i, false, i === page));
+            } else if (i === page - 3 || i === page + 3) {
+                pagination.appendChild(createPageItem('...', 0, true));
+            }
+        }
+        pagination.appendChild(createPageItem('Next', page + 1, page === totalPages));
+    }
+
+    function wireSortableHeaders(tableId, getState, onChange) {
+        document.getElementById(tableId).querySelector('thead').addEventListener('click', (e) => {
+            const th = e.target.closest('th');
+            if (!th || !th.dataset.sort) return;
+            const s = getState();
+            const field = th.dataset.sort;
+            if (s.sortBy === field) {
+                s.sortDir = s.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                s.sortBy = field;
+                s.sortDir = 'asc';
+            }
+            document.querySelectorAll(`#${tableId} thead th`).forEach(header => {
+                header.classList.remove('sort-asc', 'sort-desc');
+                const icon = header.querySelector('.sort-icon');
+                if (icon) icon.innerHTML = '&#x2195;';
+            });
+            th.classList.add(s.sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+            const icon = th.querySelector('.sort-icon');
+            if (icon) icon.innerHTML = s.sortDir === 'asc' ? '&#x2191;' : '&#x2193;';
+            onChange();
+        });
+    }
+
+    wireSortableHeaders('articlesTable', () => articlesState, () => { articlesState.page = 1; fetchArticles(); });
+
+    let articlesSearchTimeout;
+    document.getElementById('articles-search').addEventListener('keyup', () => {
+        clearTimeout(articlesSearchTimeout);
+        articlesSearchTimeout = setTimeout(() => {
+            articlesState.q = document.getElementById('articles-search').value.trim();
+            articlesState.page = 1;
+            fetchArticles();
+        }, 300);
+    });
+
+    // --- Vendors / Products pages ---
+    const vendorsState = { all: [], q: '', sortBy: 'cve_count', sortDir: 'desc' };
+    const productsState = { all: [], q: '', sortBy: 'cve_count', sortDir: 'desc' };
+
+    function fetchVendors() {
+        fetch(`${API_BASE}/vendors`)
+            .then(response => response.json())
+            .then(data => {
+                vendorsState.all = data.items || [];
+                renderVendorsTable();
+            })
+            .catch(error => console.error('Error fetching vendors:', error));
+    }
+
+    function fetchProducts() {
+        fetch(`${API_BASE}/products`)
+            .then(response => response.json())
+            .then(data => {
+                productsState.all = data.items || [];
+                renderProductsTable();
+            })
+            .catch(error => console.error('Error fetching products:', error));
+    }
+
+    function sortRows(rows, sortBy, sortDir) {
+        const dir = sortDir === 'asc' ? 1 : -1;
+        return [...rows].sort((a, b) => {
+            let av = a[sortBy];
+            let bv = b[sortBy];
+            if (typeof av === 'string') av = av.toLowerCase();
+            if (typeof bv === 'string') bv = bv.toLowerCase();
+            if (av < bv) return -1 * dir;
+            if (av > bv) return 1 * dir;
+            return 0;
+        });
+    }
+
+    function renderVendorsTable() {
+        const tbody = document.getElementById('vendors-table-body');
+        const emptyState = document.getElementById('vendors-empty-state');
+        let rows = vendorsState.all;
+        if (vendorsState.q) {
+            const q = vendorsState.q.toLowerCase();
+            rows = rows.filter(v => v.vendor.toLowerCase().includes(q));
+        }
+        rows = sortRows(rows, vendorsState.sortBy, vendorsState.sortDir);
+
+        tbody.innerHTML = '';
+        if (vendorsState.all.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No vendors match your search.</td></tr>';
+            return;
+        }
+        rows.forEach(v => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${escapeHtml(v.vendor)}</strong></td>
+                <td class="text-center">${v.product_count}</td>
+                <td class="text-center">${v.cve_count}</td>
+                <td class="text-center">${v.kev_count > 0 ? `<span class="badge bg-danger">${v.kev_count}</span>` : '0'}</td>
+                <td class="text-center">${v.critical_count}</td>
+                <td class="text-center">${v.high_count}</td>
+            `;
+            row.addEventListener('click', () => goToOverviewFiltered({ vendor: v.vendor }));
+            tbody.appendChild(row);
+        });
+    }
+
+    function renderProductsTable() {
+        const tbody = document.getElementById('products-table-body');
+        const emptyState = document.getElementById('products-empty-state');
+        let rows = productsState.all;
+        if (productsState.q) {
+            const q = productsState.q.toLowerCase();
+            rows = rows.filter(p => p.product.toLowerCase().includes(q) || (p.vendor || '').toLowerCase().includes(q));
+        }
+        rows = sortRows(rows, productsState.sortBy, productsState.sortDir);
+
+        tbody.innerHTML = '';
+        if (productsState.all.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No products match your search.</td></tr>';
+            return;
+        }
+        rows.forEach(p => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${escapeHtml(p.product)}</strong></td>
+                <td class="text-muted">${escapeHtml(p.vendor || 'N/A')}</td>
+                <td class="text-center">${p.cve_count}</td>
+                <td class="text-center">${p.kev_count > 0 ? `<span class="badge bg-danger">${p.kev_count}</span>` : '0'}</td>
+                <td class="text-center">${p.critical_count}</td>
+                <td class="text-center">${p.high_count}</td>
+            `;
+            row.addEventListener('click', () => goToOverviewFiltered({ vendor: p.vendor, product: p.product }));
+            tbody.appendChild(row);
+        });
+    }
+
+    wireSortableHeaders('vendorsTable', () => vendorsState, renderVendorsTable);
+    wireSortableHeaders('productsTable', () => productsState, renderProductsTable);
+
+    let vendorsSearchTimeout;
+    document.getElementById('vendors-search').addEventListener('keyup', () => {
+        clearTimeout(vendorsSearchTimeout);
+        vendorsSearchTimeout = setTimeout(() => {
+            vendorsState.q = document.getElementById('vendors-search').value.trim();
+            renderVendorsTable();
+        }, 300);
+    });
+
+    let productsSearchTimeout;
+    document.getElementById('products-search').addEventListener('keyup', () => {
+        clearTimeout(productsSearchTimeout);
+        productsSearchTimeout = setTimeout(() => {
+            productsState.q = document.getElementById('products-search').value.trim();
+            renderProductsTable();
+        }, 300);
+    });
+
     // --- Vulnerability checker ---
     const STATUS_LABELS = { vulnerable: 'Vulnerable', not_affected: 'Not Affected', unknown: 'Unknown' };
     const STATUS_ICONS = {
@@ -1184,6 +1473,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         fetchCVEs();
                         fetchFilters();
                         fetchSources();
+                        fetchArticles();
+                        fetchVendors();
+                        fetchProducts();
                     }
                 }
                 wasRunning = data.running;
@@ -1212,6 +1504,9 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchStats();
     fetchFilters();
     fetchCVEs();
+    fetchArticles();
+    fetchVendors();
+    fetchProducts();
     fetchSourceTypes();
     fetchSources();
     setDynamicFooter();

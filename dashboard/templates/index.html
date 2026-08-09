@@ -33,35 +33,35 @@
     <div class="container-fluid app-body">
         <!-- KPI Row -->
         <div class="stats-grid mb-4">
-            <div class="stat-tile">
+            <div class="stat-tile stat-tile-clickable" id="stat-tile-cves" role="button" tabindex="0" title="View all CVEs">
                 <div class="stat-icon stat-icon-primary"><i class="bi bi-bug-fill"></i></div>
                 <div>
                     <div id="total-cves" class="value">&hellip;</div>
                     <div class="label">Total CVEs Tracked</div>
                 </div>
             </div>
-            <div class="stat-tile">
+            <div class="stat-tile stat-tile-clickable" id="stat-tile-articles" role="button" tabindex="0" title="View scanned articles">
                 <div class="stat-icon stat-icon-success"><i class="bi bi-newspaper"></i></div>
                 <div>
                     <div id="total-articles" class="value">&hellip;</div>
                     <div class="label">Articles Scanned</div>
                 </div>
             </div>
-            <div class="stat-tile">
+            <div class="stat-tile stat-tile-clickable" id="stat-tile-kev" role="button" tabindex="0" title="View actively exploited CVEs">
                 <div class="stat-icon stat-icon-critical"><i class="bi bi-exclamation-triangle-fill"></i></div>
                 <div>
                     <div id="kev-count" class="value">&hellip;</div>
                     <div class="label">Known Exploited (KEV)</div>
                 </div>
             </div>
-            <div class="stat-tile">
+            <div class="stat-tile stat-tile-clickable" id="stat-tile-vendors" role="button" tabindex="0" title="View vendors">
                 <div class="stat-icon stat-icon-info"><i class="bi bi-building-fill"></i></div>
                 <div>
                     <div id="vendor-count" class="value">&hellip;</div>
                     <div class="label">Unique Vendors</div>
                 </div>
             </div>
-            <div class="stat-tile">
+            <div class="stat-tile stat-tile-clickable" id="stat-tile-products" role="button" tabindex="0" title="View products">
                 <div class="stat-icon stat-icon-info"><i class="bi bi-box-seam-fill"></i></div>
                 <div>
                     <div id="product-count" class="value">&hellip;</div>
@@ -80,6 +80,21 @@
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="tab-btn-checker" data-bs-toggle="tab" data-bs-target="#tab-checker" type="button" role="tab">
                     <i class="bi bi-search"></i> Vulnerability Checker
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-btn-articles" data-bs-toggle="tab" data-bs-target="#tab-articles" type="button" role="tab">
+                    <i class="bi bi-newspaper"></i> Articles
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-btn-vendors" data-bs-toggle="tab" data-bs-target="#tab-vendors" type="button" role="tab">
+                    <i class="bi bi-building"></i> Vendors
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="tab-btn-products" data-bs-toggle="tab" data-bs-target="#tab-products" type="button" role="tab">
+                    <i class="bi bi-box-seam"></i> Products
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -107,6 +122,7 @@
                                         <div class="col-md-4"><label for="search-input" class="form-label">Search</label><input type="text" class="form-control" id="search-input" placeholder="CVE-ID, product, keyword..."></div>
                                         <div class="col-md-2"><label for="filter-severity" class="form-label">Severity</label><select id="filter-severity" class="form-select"><option value="">All</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option></select></div>
                                         <div class="col-md-3"><label for="filter-vendor" class="form-label">Vendor</label><select id="filter-vendor" class="form-select"><option value="">All</option></select></div>
+                                        <div class="col-md-3"><label for="filter-product" class="form-label">Product</label><select id="filter-product" class="form-select"><option value="">All</option></select></div>
                                         <div class="col-md-3"><label for="filter-source" class="form-label">Source Site</label><select id="filter-source" class="form-select"><option value="">All</option></select></div>
                                         <div class="col-md-2"><label for="filter-min-cvss" class="form-label">Min CVSS</label><input type="number" step="0.1" min="0" max="10" class="form-control" id="filter-min-cvss"></div>
                                         <div class="col-md-2"><label for="filter-min-epss" class="form-label">Min EPSS</label><input type="number" step="0.01" min="0" max="1" class="form-control" id="filter-min-epss"></div>
@@ -222,6 +238,107 @@
                     <i class="bi bi-shield-check"></i>
                     <p>No known CVEs found for this product in the collected intelligence.</p>
                     <p class="text-muted small">This reflects only what has been enriched so far &mdash; it is not a guarantee of safety.</p>
+                </div>
+            </div>
+
+            <!-- Articles tab -->
+            <div class="tab-pane fade" id="tab-articles" role="tabpanel">
+                <div class="card app-card mb-4">
+                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+                        <h6 class="m-0">Scanned Articles</h6>
+                        <input type="text" class="form-control form-control-sm" id="articles-search" placeholder="Search title, site..." style="width: 240px;">
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover app-table" id="articlesTable">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="title">Title <span class="sort-icon">&#x2195;</span></th>
+                                        <th data-sort="site_name">Site <span class="sort-icon">&#x2195;</span></th>
+                                        <th data-sort="published_date">Published <span class="sort-icon">&#x2195;</span></th>
+                                        <th data-sort="fetched_at">Fetched <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="cve_count">CVEs Found <span class="sort-icon">&#x2195;</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="articles-table-body">
+                                    <tr><td colspan="5" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="articles-empty-state" class="app-empty-state d-none">
+                            <i class="bi bi-newspaper"></i>
+                            <p>No articles have been scanned yet.</p>
+                        </div>
+                        <nav>
+                            <ul class="pagination justify-content-center" id="articles-pagination"></ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vendors tab -->
+            <div class="tab-pane fade" id="tab-vendors" role="tabpanel">
+                <div class="card app-card mb-4">
+                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+                        <h6 class="m-0">Vendors</h6>
+                        <input type="text" class="form-control form-control-sm" id="vendors-search" placeholder="Search vendor..." style="width: 220px;">
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover app-table" id="vendorsTable">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="product_count">Products <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vendors-table-body">
+                                    <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="vendors-empty-state" class="app-empty-state d-none">
+                            <i class="bi bi-building"></i>
+                            <p>No vendors identified yet.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Products tab -->
+            <div class="tab-pane fade" id="tab-products" role="tabpanel">
+                <div class="card app-card mb-4">
+                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+                        <h6 class="m-0">Products</h6>
+                        <input type="text" class="form-control form-control-sm" id="products-search" placeholder="Search product..." style="width: 220px;">
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover app-table" id="productsTable">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="product">Product <span class="sort-icon">&#x2195;</span></th>
+                                        <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
+                                        <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="products-table-body">
+                                    <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="products-empty-state" class="app-empty-state d-none">
+                            <i class="bi bi-box-seam"></i>
+                            <p>No products identified yet.</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 

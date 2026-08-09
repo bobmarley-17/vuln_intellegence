@@ -312,6 +312,90 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             sources.update(_source_sites(c))
         return jsonify({"vendors": vendors, "products": products, "sources": sorted(sources)})
 
+    @app.route("/api/articles")
+    def api_articles():
+        articles = cache.get_articles()
+        q = (request.args.get("q") or "").strip().lower()
+        if q:
+            articles = [
+                a
+                for a in articles
+                if q in (a.get("title") or "").lower()
+                or q in (a.get("site_name") or "").lower()
+                or q in (a.get("url") or "").lower()
+            ]
+
+        sort_by = request.args.get("sort_by", "fetched_at")
+        reverse = request.args.get("sort_dir", "desc") != "asc"
+        key_funcs = {
+            "fetched_at": lambda a: a.get("fetched_at") or "",
+            "published_date": lambda a: a.get("published_date") or "",
+            "title": lambda a: (a.get("title") or "").lower(),
+            "site_name": lambda a: (a.get("site_name") or "").lower(),
+            "cve_count": lambda a: len(a.get("cves") or []),
+        }
+        articles = sorted(articles, key=key_funcs.get(sort_by, key_funcs["fetched_at"]), reverse=reverse)
+
+        page = max(request.args.get("page", 1, type=int) or 1, 1)
+        page_size = min(max(request.args.get("page_size", 25, type=int) or 25, 1), 200)
+        total = len(articles)
+        start = (page - 1) * page_size
+        # The article body isn't needed for a list view; drop it to keep the payload light.
+        page_items = [{k: v for k, v in a.items() if k != "content"} for a in articles[start : start + page_size]]
+
+        return jsonify({"total": total, "page": page, "page_size": page_size, "items": page_items})
+
+    @app.route("/api/vendors")
+    def api_vendors_list():
+        """Per-vendor CVE rollup for the Vendors page."""
+        cves = cache.get_all_cves()
+        agg: dict[str, dict] = {}
+        for c in cves:
+            if not c.vendor:
+                continue
+            entry = agg.setdefault(
+                c.vendor,
+                {"vendor": c.vendor, "cve_count": 0, "kev_count": 0, "critical_count": 0, "high_count": 0, "_products": set()},
+            )
+            entry["cve_count"] += 1
+            entry["kev_count"] += int(c.kev_listed)
+            if c.risk_level == "Critical":
+                entry["critical_count"] += 1
+            elif c.risk_level == "High":
+                entry["high_count"] += 1
+            if c.product:
+                entry["_products"].add(c.product)
+
+        results = []
+        for entry in agg.values():
+            entry["product_count"] = len(entry.pop("_products"))
+            results.append(entry)
+        results.sort(key=lambda v: v["cve_count"], reverse=True)
+        return jsonify({"total": len(results), "items": results})
+
+    @app.route("/api/products")
+    def api_products_list():
+        """Per-product CVE rollup for the Products page."""
+        cves = cache.get_all_cves()
+        agg: dict[tuple[str, str], dict] = {}
+        for c in cves:
+            if not c.product:
+                continue
+            key = (c.vendor or "", c.product)
+            entry = agg.setdefault(
+                key,
+                {"vendor": c.vendor, "product": c.product, "cve_count": 0, "kev_count": 0, "critical_count": 0, "high_count": 0},
+            )
+            entry["cve_count"] += 1
+            entry["kev_count"] += int(c.kev_listed)
+            if c.risk_level == "Critical":
+                entry["critical_count"] += 1
+            elif c.risk_level == "High":
+                entry["high_count"] += 1
+
+        results = sorted(agg.values(), key=lambda v: v["cve_count"], reverse=True)
+        return jsonify({"total": len(results), "items": results})
+
     @app.route("/api/source-types")
     def api_source_types():
         return jsonify({"source_types": list(SOURCE_TYPES)})
