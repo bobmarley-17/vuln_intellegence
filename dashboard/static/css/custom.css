@@ -38,16 +38,17 @@
   --chart-axis: #c3c2b7;
   --chart-muted: #898781;
 
-  /* Sidebar / header chrome -- intentionally dark in both themes, like the
-     reference platforms (Sentinel, Falcon, Defender all keep a dark rail
-     regardless of the content-area theme). */
-  --shell-bg: #0c0f17;
-  --shell-bg-raised: #12151f;
-  --shell-text: #e7e9f0;
-  --shell-text-muted: #8a90a4;
-  --shell-border: rgba(255, 255, 255, 0.08);
-  --shell-active-bg: rgba(42, 120, 214, 0.16);
-  --shell-active-text: #6ba6ef;
+  /* Sidebar / header chrome -- follows the light/dark toggle like the rest
+     of the app (a permanently-dark rail read as broken in light mode). */
+  --shell-bg: #ffffff;
+  --shell-bg-raised: #f8f9fc;
+  --shell-text: #171b26;
+  --shell-text-muted: #5b6473;
+  --shell-border: #e2e6ed;
+  --shell-active-bg: rgba(42, 120, 214, 0.10);
+  --shell-active-text: #1c5cab;
+  --shell-section-label: #8a90a0;
+  --shell-hover-bg: rgba(23, 27, 38, 0.05);
 
   --avatar-palette-1: #2a78d6;
   --avatar-palette-2: #1baf7a;
@@ -78,6 +79,16 @@
   --chart-grid: #2c2c2a;
   --chart-axis: #383835;
   --chart-muted: #898781;
+
+  --shell-bg: #0c0f17;
+  --shell-bg-raised: #12151f;
+  --shell-text: #e7e9f0;
+  --shell-text-muted: #8a90a4;
+  --shell-border: rgba(255, 255, 255, 0.08);
+  --shell-active-bg: rgba(57, 135, 229, 0.16);
+  --shell-active-text: #6ba6ef;
+  --shell-section-label: #6b7280;
+  --shell-hover-bg: rgba(255, 255, 255, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -102,6 +113,15 @@
     --chart-grid: #2c2c2a;
     --chart-axis: #383835;
     --chart-muted: #898781;
+
+    --shell-bg: #0c0f17;
+    --shell-bg-raised: #12151f;
+    --shell-text: #e7e9f0;
+    --shell-text-muted: #8a90a4;
+    --shell-border: rgba(255, 255, 255, 0.08);
+    --shell-active-bg: rgba(57, 135, 229, 0.16);
+    --shell-active-text: #6ba6ef;
+    --shell-section-label: #6b7280;
   }
 }
 
@@ -147,7 +167,7 @@ body {
   gap: 10px;
   padding: 18px 20px;
   border-bottom: 1px solid var(--shell-border);
-  color: #ffffff;
+  color: var(--shell-text);
   font-weight: 700;
   font-size: 1.05rem;
   white-space: nowrap;
@@ -184,7 +204,7 @@ body {
   cursor: pointer;
 }
 .sidebar-link i { font-size: 1.05rem; width: 20px; text-align: center; flex-shrink: 0; }
-.sidebar-link:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+.sidebar-link:hover { background: var(--shell-hover-bg); color: var(--shell-text); }
 .sidebar-link.active { background: var(--shell-active-bg); color: var(--shell-active-text); }
 .sidebar-link .sidebar-link-label { overflow: hidden; text-overflow: ellipsis; }
 .app-shell.sidebar-collapsed .sidebar-link .sidebar-link-label { display: none; }
@@ -194,7 +214,7 @@ body {
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #565c72;
+  color: var(--shell-section-label);
   padding: 14px 12px 6px;
   font-weight: 700;
 }
@@ -218,7 +238,7 @@ body {
   background: transparent;
   color: var(--shell-text-muted);
 }
-.sidebar-collapse-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.sidebar-collapse-btn:hover { color: var(--shell-text); background: var(--shell-hover-bg); }
 .app-shell.sidebar-collapsed .sidebar-collapse-btn i { transform: rotate(180deg); }
 
 .app-main {
@@ -328,32 +348,32 @@ body {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
 }
 
 .stat-tile {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
-  padding: 16px 18px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
   transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
 }
 
 .stat-tile-top { display: flex; align-items: center; justify-content: space-between; }
 
 .stat-icon {
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.05rem;
+  font-size: 0.82rem;
   flex-shrink: 0;
 }
 .stat-icon-primary { background: var(--accent-soft); color: var(--accent); }
@@ -363,10 +383,10 @@ body {
 .stat-icon-medium { background: rgba(250, 178, 25, 0.16); color: #a86a00; }
 .stat-icon-info { background: rgba(137, 135, 129, 0.14); color: var(--text-muted); }
 
-.stat-tile .value { font-size: 1.55rem; font-weight: 800; line-height: 1.1; color: var(--text); letter-spacing: -0.01em; }
-.stat-tile .label { color: var(--text-muted); font-size: 0.76rem; margin-top: 2px; font-weight: 600; }
-.stat-tile .trend { font-size: 0.72rem; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
-.stat-tile .trend i { font-size: 0.85rem; }
+.stat-tile .value { font-size: 1.15rem; font-weight: 800; line-height: 1.1; color: var(--text); letter-spacing: -0.01em; }
+.stat-tile .label { color: var(--text-muted); font-size: 0.68rem; margin-top: 1px; font-weight: 600; }
+.stat-tile .trend { font-size: 0.64rem; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+.stat-tile .trend i { font-size: 0.75rem; }
 .stat-tile .trend.trend-up { color: var(--critical); }
 .stat-tile .trend.trend-flat { color: var(--text-muted); }
 

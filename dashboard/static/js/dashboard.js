@@ -81,16 +81,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 document.getElementById('product-count').textContent = data.product_count;
                 document.getElementById('critical-count').textContent = sev.Critical || 0;
                 document.getElementById('high-count').textContent = sev.High || 0;
-                document.getElementById('medium-count').textContent = sev.Medium || 0;
-                document.getElementById('low-count').textContent = sev.Low || 0;
 
                 // Real, non-fabricated secondary metrics -- no invented trend
                 // arrows, since there's no historical snapshot to compare against.
                 setTrend('trend-cves', data.recent_cves_7d ? `+${data.recent_cves_7d} in the last 7 days` : 'No new CVEs in 7 days');
                 setTrend('trend-critical', total ? `${pct(sev.Critical, total)}% of tracked CVEs` : ' ');
                 setTrend('trend-high', total ? `${pct(sev.High, total)}% of tracked CVEs` : ' ');
-                setTrend('trend-medium', total ? `${pct(sev.Medium, total)}% of tracked CVEs` : ' ');
-                setTrend('trend-low', total ? `${pct(sev.Low, total)}% of tracked CVEs` : ' ');
                 setTrend('trend-kev', total ? `${pct(data.kev_count, total)}% of tracked CVEs` : ' ');
                 setTrend('trend-articles', data.recent_articles_7d ? `+${data.recent_articles_7d} in the last 7 days` : 'No new articles in 7 days');
                 setTrend('trend-vendors', data.top_vendor ? `Top: ${data.top_vendor.name} (${data.top_vendor.count})` : ' ');
@@ -604,8 +600,6 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('stat-tile-cves').addEventListener('click', () => goToOverviewFiltered({}));
     document.getElementById('stat-tile-critical').addEventListener('click', () => goToOverviewFiltered({ severity: 'CRITICAL' }));
     document.getElementById('stat-tile-high').addEventListener('click', () => goToOverviewFiltered({ severity: 'HIGH' }));
-    document.getElementById('stat-tile-medium').addEventListener('click', () => goToOverviewFiltered({ severity: 'MEDIUM' }));
-    document.getElementById('stat-tile-low').addEventListener('click', () => goToOverviewFiltered({ severity: 'LOW' }));
     document.getElementById('stat-tile-kev').addEventListener('click', () => switchToTab('tab-kev'));
     document.getElementById('stat-tile-articles').addEventListener('click', () => switchToTab('tab-articles'));
     document.getElementById('stat-tile-vendors').addEventListener('click', () => switchToTab('tab-vendors'));
@@ -2357,6 +2351,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         const isDark = theme ? theme === 'dark' : prefersDark;
+        // Bootstrap 5.3's own components (tables, modals, form controls) only
+        // switch to their dark palette when data-bs-theme is set -- our
+        // data-theme attribute only drives our own custom CSS variables.
+        // Without this, raw Bootstrap-styled elements stayed light-mode even
+        // when the rest of the page went dark.
+        document.documentElement.setAttribute('data-bs-theme', isDark ? 'dark' : 'light');
         const icon = document.querySelector('#theme-toggle i');
         if (icon) icon.className = isDark ? 'bi bi-sun' : 'bi bi-moon-stars';
         if (severityChart) {
