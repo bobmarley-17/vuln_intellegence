@@ -213,7 +213,9 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         vendor_counts: dict[str, int] = {}
         product_counts: dict[str, int] = {}
         kev_count = 0
+        recent_cves_7d = 0
 
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         for c in cves:
             level = c.risk_level or "Low"
             if level in severity_counts:
@@ -224,8 +226,16 @@ def create_app(config: Config, debug: bool = False) -> Flask:
                 product_counts[c.product] = product_counts.get(c.product, 0) + 1
             if c.kev_listed:
                 kev_count += 1
+            published = _parse_iso_date(c.published_date)
+            if published and published >= cutoff:
+                recent_cves_7d += 1
+
+        recent_articles_7d = sum(1 for a in articles if (_parse_iso_date(a.get("fetched_at")) or cutoff) >= cutoff)
 
         top_vendors = sorted(vendor_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        top_vendor = {"name": top_vendors[0][0], "count": top_vendors[0][1]} if top_vendors else None
+        top_products = sorted(product_counts.items(), key=lambda kv: kv[1], reverse=True)[:1]
+        top_product = {"name": top_products[0][0], "count": top_products[0][1]} if top_products else None
 
         return jsonify(
             {
@@ -236,6 +246,85 @@ def create_app(config: Config, debug: bool = False) -> Flask:
                 "vendor_count": len(vendor_counts),
                 "product_count": len(product_counts),
                 "top_vendors": [{"vendor": v, "count": n} for v, n in top_vendors],
+                "recent_cves_7d": recent_cves_7d,
+                "recent_articles_7d": recent_articles_7d,
+                "top_vendor": top_vendor,
+                "top_product": top_product,
+            }
+        )
+
+    @app.route("/api/analytics")
+    def api_analytics():
+        """Aggregate chart data for the Analytics page. Computed on demand
+        from the same cached CVE set /api/stats and /api/vendors use --
+        no separate storage, so it's always consistent with the rest of
+        the dashboard."""
+        cves = cache.get_all_cves()
+
+        monthly_counts: dict[str, int] = {}
+        for c in cves:
+            published = _parse_iso_date(c.published_date)
+            if not published:
+                continue
+            key = f"{published.year:04d}-{published.month:02d}"
+            monthly_counts[key] = monthly_counts.get(key, 0) + 1
+        monthly_trend = [{"month": k, "count": monthly_counts[k]} for k in sorted(monthly_counts)[-12:]]
+
+        vendor_counts: dict[str, int] = {}
+        product_counts: dict[str, int] = {}
+        kev_count = 0
+        for c in cves:
+            if c.vendor:
+                vendor_counts[c.vendor] = vendor_counts.get(c.vendor, 0) + 1
+            if c.product:
+                product_counts[c.product] = product_counts.get(c.product, 0) + 1
+            if c.kev_listed:
+                kev_count += 1
+
+        top_vendors = sorted(vendor_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+        top_products = sorted(product_counts.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+        recent = sorted(cves, key=lambda c: c.published_date or "", reverse=True)[:8]
+
+        return jsonify(
+            {
+                "monthly_trend": monthly_trend,
+                "vendor_bar": [{"vendor": v, "count": n} for v, n in top_vendors],
+                "product_bar": [{"product": p, "count": n} for p, n in top_products],
+                "kev_vs_non_kev": {"kev": kev_count, "non_kev": len(cves) - kev_count},
+                "recent_cves": [
+                    {
+                        "cve_id": c.cve_id,
+                        "vendor": c.vendor,
+                        "product": c.product,
+                        "risk_level": c.risk_level,
+                        "published_date": c.published_date,
+                        "kev_listed": c.kev_listed,
+                    }
+                    for c in recent
+                ],
+            }
+        )
+
+    @app.route("/api/settings")
+    def api_settings():
+        """Read-only view of the active (non-secret) configuration. There is
+        no settings-editing UI: these values come from environment
+        variables / config.yaml, so surfacing them read-only avoids a
+        Settings page with controls that don't actually do anything."""
+        return jsonify(
+            {
+                "request_timeout_seconds": config.request_timeout,
+                "max_retries": config.max_retries,
+                "backoff_factor": config.backoff_factor,
+                "concurrency": config.concurrency,
+                "cache_ttl_hours": config.cache_ttl_hours,
+                "nvd_api_key_configured": bool(config.nvd_api_key),
+                "nvd_rate_limit_delay_seconds": config.nvd_rate_limit_delay,
+                "urls_file": config.urls_file,
+                "output_folder": config.output_folder,
+                "cache_folder": config.cache_folder,
+                "log_folder": config.log_folder,
             }
         )
 
@@ -543,6 +632,18 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         return jsonify({"message": "Pipeline run started"}), 202
 
     return app
+
+
+def _parse_iso_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _parse_polling_interval(raw) -> tuple[bool, int | None]:

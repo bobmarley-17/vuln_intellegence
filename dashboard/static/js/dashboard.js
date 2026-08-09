@@ -1,6 +1,10 @@
 document.addEventListener('DOMContentLoaded', function () {
     const API_BASE = '/api';
     let severityChart = null;
+    let trendChart = null;
+    let kevSplitChart = null;
+    let vendorBarChart = null;
+    let productBarChart = null;
 
     const state = {
         page: 1,
@@ -51,15 +55,44 @@ document.addEventListener('DOMContentLoaded', function () {
         return ['Critical', 'High', 'Medium', 'Low'].includes(value) ? value : 'Low';
     }
 
+    function pct(n, total) {
+        if (!total) return 0;
+        return Math.round((n / total) * 100);
+    }
+
+    function setTrend(elementId, text) {
+        const el = document.getElementById(elementId);
+        if (el) el.textContent = text;
+    }
+
     function fetchStats() {
         fetch(`${API_BASE}/stats`)
             .then(response => response.json())
             .then(data => {
-                document.getElementById('total-cves').textContent = data.total_cves;
+                const total = data.total_cves || 0;
+                const sev = data.severity_counts || {};
+                document.getElementById('total-cves').textContent = total;
                 document.getElementById('total-articles').textContent = data.total_articles;
                 document.getElementById('kev-count').textContent = data.kev_count;
                 document.getElementById('vendor-count').textContent = data.vendor_count;
                 document.getElementById('product-count').textContent = data.product_count;
+                document.getElementById('critical-count').textContent = sev.Critical || 0;
+                document.getElementById('high-count').textContent = sev.High || 0;
+                document.getElementById('medium-count').textContent = sev.Medium || 0;
+                document.getElementById('low-count').textContent = sev.Low || 0;
+
+                // Real, non-fabricated secondary metrics -- no invented trend
+                // arrows, since there's no historical snapshot to compare against.
+                setTrend('trend-cves', data.recent_cves_7d ? `+${data.recent_cves_7d} in the last 7 days` : 'No new CVEs in 7 days');
+                setTrend('trend-critical', total ? `${pct(sev.Critical, total)}% of tracked CVEs` : ' ');
+                setTrend('trend-high', total ? `${pct(sev.High, total)}% of tracked CVEs` : ' ');
+                setTrend('trend-medium', total ? `${pct(sev.Medium, total)}% of tracked CVEs` : ' ');
+                setTrend('trend-low', total ? `${pct(sev.Low, total)}% of tracked CVEs` : ' ');
+                setTrend('trend-kev', total ? `${pct(data.kev_count, total)}% of tracked CVEs` : ' ');
+                setTrend('trend-articles', data.recent_articles_7d ? `+${data.recent_articles_7d} in the last 7 days` : 'No new articles in 7 days');
+                setTrend('trend-vendors', data.top_vendor ? `Top: ${data.top_vendor.name} (${data.top_vendor.count})` : ' ');
+                setTrend('trend-products', data.top_product ? `Top: ${data.top_product.name} (${data.top_product.count})` : ' ');
+
                 renderSeverityChart(data.severity_counts);
             })
             .catch(error => console.error('Error fetching stats:', error));
@@ -184,13 +217,39 @@ document.addEventListener('DOMContentLoaded', function () {
         return rows;
     }
 
+    function sourceActionButtons(source) {
+        return `
+            <div class="source-actions">
+                <button class="btn btn-outline-secondary" data-action="view" data-id="${source.id}" title="View"><i class="bi bi-eye"></i></button>
+                <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#addSourceModal" data-source-id="${source.id}" title="Edit"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-outline-secondary" data-action="scan" data-id="${source.id}" title="Run Scan" ${!source.enabled ? 'disabled' : ''}><i class="bi bi-play-fill"></i></button>
+                <button class="btn btn-outline-secondary" data-action="toggle" data-id="${source.id}" data-enabled="${source.enabled}" title="${source.enabled ? 'Disable' : 'Enable'}"><i class="bi ${source.enabled ? 'bi-toggle-on' : 'bi-toggle-off'}"></i></button>
+                <button class="btn btn-outline-secondary" data-action="history" data-id="${source.id}" title="Scan History"><i class="bi bi-clock-history"></i></button>
+                <button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>
+            </div>
+        `;
+    }
+
+    function handleSourceAction(e) {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const { action, id } = btn.dataset;
+        if (action === 'view') viewSource(id);
+        else if (action === 'scan') runSourceScan(id);
+        else if (action === 'toggle') toggleSourceEnabled(id, btn.dataset.enabled === 'true');
+        else if (action === 'history') showSourceHistory(id);
+        else if (action === 'delete') openDeleteSourceModal(id);
+    }
+
     function renderSourcesTable() {
         const tbody = document.getElementById('sources-table-body');
+        const cardContainer = document.getElementById('sources-card-view');
         const emptyState = document.getElementById('sources-empty-state');
         const filtered = getFilteredSortedSources();
 
         if (sourcesState.all.length === 0) {
             tbody.innerHTML = '';
+            cardContainer.innerHTML = '';
             emptyState.classList.remove('d-none');
             renderSourcesPagination(0);
             return;
@@ -199,6 +258,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (filtered.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">No sources match your search/filter.</td></tr>';
+            cardContainer.innerHTML = '<p class="text-muted text-center py-4">No sources match your search/filter.</p>';
             renderSourcesPagination(0);
             return;
         }
@@ -209,6 +269,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const pageRows = filtered.slice(start, start + sourcesState.pageSize);
 
         tbody.innerHTML = '';
+        cardContainer.innerHTML = '';
         pageRows.forEach(source => {
             const row = document.createElement('tr');
             if (!source.enabled) row.classList.add('source-row-disabled');
@@ -229,18 +290,33 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td class="text-center">${articles}</td>
                 <td class="text-center">${cves}</td>
                 <td>${source.last_error ? `<span class="source-error-cell" title="${escapeHtml(source.last_error)}">${escapeHtml(source.last_error)}</span>` : '<span class="text-muted">&mdash;</span>'}</td>
-                <td>
-                    <div class="source-actions">
-                        <button class="btn btn-outline-secondary" data-action="view" data-id="${source.id}" title="View"><i class="bi bi-eye"></i></button>
-                        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#addSourceModal" data-source-id="${source.id}" title="Edit"><i class="bi bi-pencil"></i></button>
-                        <button class="btn btn-outline-secondary" data-action="scan" data-id="${source.id}" title="Run Scan" ${!source.enabled ? 'disabled' : ''}><i class="bi bi-play-fill"></i></button>
-                        <button class="btn btn-outline-secondary" data-action="toggle" data-id="${source.id}" data-enabled="${source.enabled}" title="${source.enabled ? 'Disable' : 'Enable'}"><i class="bi ${source.enabled ? 'bi-toggle-on' : 'bi-toggle-off'}"></i></button>
-                        <button class="btn btn-outline-secondary" data-action="history" data-id="${source.id}" title="Scan History"><i class="bi bi-clock-history"></i></button>
-                        <button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>
-                    </div>
-                </td>
+                <td>${sourceActionButtons(source)}</td>
             `;
             tbody.appendChild(row);
+
+            const card = document.createElement('div');
+            card.className = `entity-card${!source.enabled ? ' source-card-disabled' : ''}`;
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(source.name || source.url)};"><i class="bi bi-rss"></i></span>
+                    <div>
+                        <div class="entity-card-title">${escapeHtml(source.name || '(unnamed)')}</div>
+                        <div class="entity-card-subtitle text-truncate" title="${escapeHtml(source.url)}">${escapeHtml(source.url)}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    <span class="source-type-badge">${escapeHtml(typeLabel)}</span>
+                    <span class="source-status-pill status-${statusKey}">${escapeHtml(statusLabel)}</span>
+                    ${cves !== '—' ? `<span class="metric-chip chip-accent">${cves} CVEs</span>` : ''}
+                </div>
+                <div class="article-card-foot">
+                    <span>Last scan: ${lastScan}</span>
+                    <span>${articles !== '—' ? `${articles} articles` : ''}</span>
+                </div>
+                ${source.last_error ? `<div class="source-error-cell text-truncate" title="${escapeHtml(source.last_error)}">${escapeHtml(source.last_error)}</div>` : ''}
+                ${sourceActionButtons(source)}
+            `;
+            cardContainer.appendChild(card);
         });
 
         renderSourcesPagination(filtered.length);
@@ -336,6 +412,30 @@ document.addEventListener('DOMContentLoaded', function () {
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     }
 
+    function hexToRgba(hex, alpha) {
+        const clean = (hex || '#888888').replace('#', '');
+        const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean;
+        const bigint = parseInt(full, 16);
+        const r = (bigint >> 16) & 255;
+        const g = (bigint >> 8) & 255;
+        const b = bigint & 255;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    // Letter avatars: no external logo service is wired up, so vendors and
+    // sources get a deterministic colored initial instead of a fetched icon.
+    const AVATAR_COLOR_VARS = ['--avatar-palette-1', '--avatar-palette-2', '--avatar-palette-3', '--avatar-palette-4', '--avatar-palette-5', '--avatar-palette-6'];
+    function avatarColor(name) {
+        const str = name || '?';
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        return cssVar(AVATAR_COLOR_VARS[Math.abs(hash) % AVATAR_COLOR_VARS.length]);
+    }
+    function avatarInitial(name) {
+        const trimmed = (name || '').trim();
+        return trimmed ? trimmed.charAt(0).toUpperCase() : '?';
+    }
+
     // Fixed status palette: severity is a state, not an open-ended category,
     // so each bar gets a reserved status color rather than a generated hue.
     const SEVERITY_ORDER = ['Critical', 'High', 'Medium', 'Low'];
@@ -408,15 +508,61 @@ document.addEventListener('DOMContentLoaded', function () {
         fetchCVEs();
     }
 
-    // --- Cross-page navigation (KPI tiles, vendor/product drill-down) ---
-    function switchToTab(tabPaneId) {
-        const btn = document.querySelector(`[data-bs-target="#${tabPaneId}"]`);
-        if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
+    // --- App shell navigation: sidebar pages, breadcrumbs, hash deep-links ---
+    // This is a small custom router rather than Bootstrap's Tab component:
+    // the sidebar links live far from .app-page in the DOM, and navigation
+    // here also needs to drive the breadcrumb, page title, and location.hash
+    // in lockstep, which is simpler to own directly than to layer on top of
+    // Tab's own active-state management.
+    function switchToTab(pageId, options = {}) {
+        document.querySelectorAll('.app-page').forEach(p => p.classList.remove('active'));
+        const page = document.getElementById(pageId);
+        if (!page) return;
+        page.classList.add('active');
+
+        document.querySelectorAll('.sidebar-link').forEach(link => link.classList.remove('active'));
+        const link = document.querySelector(`.sidebar-link[data-target="${pageId}"]`);
+        if (link) {
+            link.classList.add('active');
+            document.getElementById('page-title').textContent = link.dataset.title;
+            document.getElementById('breadcrumb-section').textContent = link.dataset.section;
+            document.getElementById('breadcrumb-page').textContent = link.dataset.title;
+        }
+        if (!options.skipHash) {
+            history.replaceState(null, '', `#/${pageId.replace('tab-', '')}`);
+        }
+        document.getElementById('app-shell').classList.remove('sidebar-mobile-open');
+
+        if (pageId === 'tab-dashboard' && severityChart) severityChart.resize();
+        if (pageId === 'tab-analytics') {
+            [trendChart, kevSplitChart, vendorBarChart, productBarChart].forEach(c => c && c.resize());
+        }
     }
+
+    function pageIdFromHash() {
+        const slug = location.hash.replace('#/', '').trim();
+        if (!slug) return 'tab-dashboard';
+        const candidate = `tab-${slug}`;
+        return document.getElementById(candidate) ? candidate : 'tab-dashboard';
+    }
+
+    document.querySelectorAll('.sidebar-link').forEach(link => {
+        link.addEventListener('click', () => switchToTab(link.dataset.target));
+    });
+    document.querySelectorAll('[data-nav]').forEach(el => {
+        el.addEventListener('click', () => switchToTab(el.dataset.nav));
+    });
+
+    document.getElementById('sidebar-collapse-btn').addEventListener('click', () => {
+        document.getElementById('app-shell').classList.toggle('sidebar-collapsed');
+    });
+    document.getElementById('sidebar-mobile-toggle').addEventListener('click', () => {
+        document.getElementById('app-shell').classList.toggle('sidebar-mobile-open');
+    });
 
     function goToOverviewFiltered(filters = {}) {
         document.getElementById('search-input').value = '';
-        document.getElementById('filter-severity').value = '';
+        document.getElementById('filter-severity').value = filters.severity || '';
         document.getElementById('filter-vendor').value = filters.vendor || '';
         document.getElementById('filter-product').value = filters.product || '';
         document.getElementById('filter-source').value = '';
@@ -427,14 +573,18 @@ document.addEventListener('DOMContentLoaded', function () {
         handleFilterChange();
 
         const collapseEl = document.getElementById('filterCollapse');
-        if (filters.vendor || filters.product || filters.kevOnly) {
+        if (filters.vendor || filters.product || filters.kevOnly || filters.severity) {
             bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
         }
         switchToTab('tab-overview');
     }
 
     document.getElementById('stat-tile-cves').addEventListener('click', () => goToOverviewFiltered({}));
-    document.getElementById('stat-tile-kev').addEventListener('click', () => goToOverviewFiltered({ kevOnly: true }));
+    document.getElementById('stat-tile-critical').addEventListener('click', () => goToOverviewFiltered({ severity: 'CRITICAL' }));
+    document.getElementById('stat-tile-high').addEventListener('click', () => goToOverviewFiltered({ severity: 'HIGH' }));
+    document.getElementById('stat-tile-medium').addEventListener('click', () => goToOverviewFiltered({ severity: 'MEDIUM' }));
+    document.getElementById('stat-tile-low').addEventListener('click', () => goToOverviewFiltered({ severity: 'LOW' }));
+    document.getElementById('stat-tile-kev').addEventListener('click', () => switchToTab('tab-kev'));
     document.getElementById('stat-tile-articles').addEventListener('click', () => switchToTab('tab-articles'));
     document.getElementById('stat-tile-vendors').addEventListener('click', () => switchToTab('tab-vendors'));
     document.getElementById('stat-tile-products').addEventListener('click', () => switchToTab('tab-products'));
@@ -699,6 +849,209 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    // --- KEV page ---
+    function fetchKevCves() {
+        const params = new URLSearchParams({ kev_only: 'true', sort_by: 'risk_score', sort_dir: 'desc', page_size: 100 });
+        fetch(`${API_BASE}/cves?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => renderKevTable(data.items))
+            .catch(error => console.error('Error fetching KEV CVEs:', error));
+    }
+
+    function renderKevTable(cves) {
+        const tbody = document.getElementById('kev-table-body');
+        const emptyState = document.getElementById('kev-empty-state');
+        tbody.innerHTML = '';
+        if (!cves || cves.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        cves.forEach(cve => {
+            const row = document.createElement('tr');
+            row.dataset.cveId = cve.cve_id;
+            row.innerHTML = `
+                <td><span class="cve-id-link">${escapeHtml(cve.cve_id)}</span></td>
+                <td>${escapeHtml(cve.vendor || 'N/A')}${cve.product ? ` <span class="text-muted">/ ${escapeHtml(cve.product)}</span>` : ''}</td>
+                <td class="text-center"><span class="badge badge-${riskLevel(cve.risk_level).toUpperCase()}">${escapeHtml(cve.risk_level || 'N/A')}</span></td>
+                <td class="text-center">${cve.risk_score !== null ? cve.risk_score.toFixed(2) : 'N/A'}</td>
+                <td>${formatDate(cve.kev_date_added)}</td>
+                <td>${formatDate(cve.kev_due_date)}</td>
+                <td>${formatDate(cve.published_date)}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    document.getElementById('kev-table-body').addEventListener('click', (e) => {
+        const row = e.target.closest('tr');
+        if (row && row.dataset.cveId) fetchAndShowCveDetails(row.dataset.cveId);
+    });
+
+    // --- Recently-published mini list (shared by Dashboard and Analytics) ---
+    function renderRecentCves(containerId, items) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        if (!items || items.length === 0) {
+            container.innerHTML = '<div class="text-center text-muted small py-4">No CVEs published yet.</div>';
+            return;
+        }
+        container.innerHTML = items.map(item => `
+            <div class="recent-cve-row" data-cve-id="${escapeHtml(item.cve_id)}">
+                <div>
+                    <span class="cve-id-link">${escapeHtml(item.cve_id)}</span>
+                    ${item.kev_listed ? '<span class="badge bg-danger ms-1">KEV</span>' : ''}
+                    <div class="recent-cve-meta">${escapeHtml(item.vendor || 'Unknown vendor')}${item.product ? ' / ' + escapeHtml(item.product) : ''}</div>
+                </div>
+                <div class="text-end">
+                    <span class="badge badge-${riskLevel(item.risk_level).toUpperCase()}">${escapeHtml(item.risk_level || 'N/A')}</span>
+                    <div class="recent-cve-meta">${formatDate(item.published_date)}</div>
+                </div>
+            </div>
+        `).join('');
+        container.querySelectorAll('.recent-cve-row').forEach(row => {
+            row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
+        });
+    }
+
+    // --- Analytics page ---
+    function fetchAnalytics() {
+        fetch(`${API_BASE}/analytics`)
+            .then(response => response.json())
+            .then(data => {
+                renderTrendChart(data.monthly_trend || []);
+                renderKevSplitChart(data.kev_vs_non_kev || { kev: 0, non_kev: 0 });
+                renderVendorBarChart(data.vendor_bar || []);
+                renderProductBarChart(data.product_bar || []);
+                renderRecentCves('analytics-recent-cves', data.recent_cves);
+                renderRecentCves('dashboard-recent-cves', (data.recent_cves || []).slice(0, 5));
+            })
+            .catch(error => console.error('Error fetching analytics:', error));
+    }
+
+    function renderTrendChart(monthlyTrend) {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        const mutedText = cssVar('--text-muted');
+        const gridColor = cssVar('--chart-grid');
+        const accent = cssVar('--accent');
+
+        if (trendChart) trendChart.destroy();
+        trendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: monthlyTrend.map(m => m.month),
+                datasets: [{
+                    data: monthlyTrend.map(m => m.count),
+                    borderColor: accent,
+                    backgroundColor: hexToRgba(accent, 0.15),
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointBackgroundColor: accent,
+                    borderWidth: 2,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: mutedText }, grid: { display: false } },
+                    y: { beginAtZero: true, ticks: { precision: 0, color: mutedText }, grid: { color: gridColor } },
+                },
+            },
+        });
+    }
+
+    function renderKevSplitChart(split) {
+        const ctx = document.getElementById('kevSplitChart').getContext('2d');
+        const critical = cssVar('--critical');
+        const axisColor = cssVar('--chart-axis');
+        document.getElementById('kev-split-kev').textContent = split.kev;
+        document.getElementById('kev-split-non-kev').textContent = split.non_kev;
+
+        if (kevSplitChart) kevSplitChart.destroy();
+        kevSplitChart = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['KEV', 'Non-KEV'],
+                datasets: [{ data: [split.kev, split.non_kev], backgroundColor: [critical, axisColor], borderWidth: 0 }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '68%',
+                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => `${item.label}: ${item.raw}` } } },
+            },
+        });
+    }
+
+    function barChartOptions(mutedText, gridColor) {
+        return {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: (item) => `${item.raw} CVE${item.raw === 1 ? '' : 's'}` } },
+            },
+            scales: {
+                x: { beginAtZero: true, ticks: { precision: 0, color: mutedText }, grid: { color: gridColor } },
+                y: { ticks: { color: mutedText }, grid: { display: false } },
+            },
+        };
+    }
+
+    function renderVendorBarChart(rows) {
+        const ctx = document.getElementById('vendorBarChart').getContext('2d');
+        const accent = cssVar('--accent');
+        if (vendorBarChart) vendorBarChart.destroy();
+        vendorBarChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: rows.map(r => r.vendor),
+                datasets: [{ data: rows.map(r => r.count), backgroundColor: accent, borderRadius: 4, borderSkipped: false, maxBarThickness: 20 }],
+            },
+            options: barChartOptions(cssVar('--text-muted'), cssVar('--chart-grid')),
+        });
+    }
+
+    function renderProductBarChart(rows) {
+        const ctx = document.getElementById('productBarChart').getContext('2d');
+        const accent = cssVar('--accent');
+        if (productBarChart) productBarChart.destroy();
+        productBarChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: rows.map(r => r.product),
+                datasets: [{ data: rows.map(r => r.count), backgroundColor: accent, borderRadius: 4, borderSkipped: false, maxBarThickness: 20 }],
+            },
+            options: barChartOptions(cssVar('--text-muted'), cssVar('--chart-grid')),
+        });
+    }
+
+    // --- Settings page ---
+    function fetchSettings() {
+        fetch(`${API_BASE}/settings`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('setting-timeout').textContent = `${data.request_timeout_seconds}s`;
+                document.getElementById('setting-retries').textContent = data.max_retries;
+                document.getElementById('setting-backoff').textContent = data.backoff_factor;
+                document.getElementById('setting-concurrency').textContent = data.concurrency;
+                document.getElementById('setting-nvd-key').textContent = data.nvd_api_key_configured ? 'Yes' : 'No (using unauthenticated NVD rate limit)';
+                document.getElementById('setting-nvd-delay').textContent = `${data.nvd_rate_limit_delay_seconds}s`;
+                document.getElementById('setting-cache-ttl').textContent = `${data.cache_ttl_hours}h`;
+                document.getElementById('setting-cache-folder').textContent = data.cache_folder;
+                document.getElementById('setting-output-folder').textContent = data.output_folder;
+                document.getElementById('setting-log-folder').textContent = data.log_folder;
+            })
+            .catch(error => console.error('Error fetching settings:', error));
+    }
+
+    document.getElementById('settings-theme-toggle').addEventListener('click', () => {
+        document.getElementById('theme-toggle').click();
+    });
 
     function setDynamicFooter() {
         const year = new Date().getFullYear();
@@ -1056,16 +1409,8 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    document.getElementById('sources-table-body').addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-action]');
-        if (!btn) return;
-        const { action, id } = btn.dataset;
-        if (action === 'view') viewSource(id);
-        else if (action === 'scan') runSourceScan(id);
-        else if (action === 'toggle') toggleSourceEnabled(id, btn.dataset.enabled === 'true');
-        else if (action === 'history') showSourceHistory(id);
-        else if (action === 'delete') openDeleteSourceModal(id);
-    });
+    document.getElementById('sources-table-body').addEventListener('click', handleSourceAction);
+    document.getElementById('sources-card-view').addEventListener('click', handleSourceAction);
 
     // --- Articles page ---
     const articlesState = { page: 1, pageSize: 25, sortBy: 'fetched_at', sortDir: 'desc', q: '' };
@@ -1082,6 +1427,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(response => response.json())
             .then(data => {
                 renderArticlesTable(data.items);
+                renderArticlesCards(data.items);
                 renderGenericPagination('articles-pagination', data.total, data.page, data.page_size, (page) => {
                     articlesState.page = page;
                     fetchArticles();
@@ -1110,6 +1456,35 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td class="text-center">${cveCount > 0 ? `<span class="badge bg-secondary">${cveCount}</span>` : '<span class="text-muted">0</span>'}</td>
             `;
             tbody.appendChild(row);
+        });
+    }
+
+    function renderArticlesCards(articles) {
+        const container = document.getElementById('articles-card-view');
+        container.innerHTML = '';
+        articles.forEach(article => {
+            const cveCount = (article.cves || []).length;
+            const card = document.createElement('div');
+            card.className = 'entity-card';
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(article.site_name || article.title)};"><i class="bi bi-newspaper"></i></span>
+                    <div>
+                        <div class="entity-card-title">
+                            <a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="text-reset text-decoration-none">${escapeHtml(article.title || article.url)}</a>
+                        </div>
+                        <div class="entity-card-subtitle">${escapeHtml(article.site_name || 'Unknown source')}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    ${cveCount > 0 ? `<span class="metric-chip chip-accent"><i class="bi bi-bug-fill"></i> ${cveCount} CVE${cveCount === 1 ? '' : 's'}</span>` : '<span class="metric-chip">No CVEs found</span>'}
+                </div>
+                <div class="article-card-foot">
+                    <span>Published ${formatDate(article.published_date)}</span>
+                    <span>Scanned ${formatDate(article.fetched_at)}</span>
+                </div>
+            `;
+            container.appendChild(card);
         });
     }
 
@@ -1222,6 +1597,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderVendorsTable() {
         const tbody = document.getElementById('vendors-table-body');
+        const cardContainer = document.getElementById('vendors-card-view');
         const emptyState = document.getElementById('vendors-empty-state');
         let rows = vendorsState.all;
         if (vendorsState.q) {
@@ -1231,6 +1607,7 @@ document.addEventListener('DOMContentLoaded', function () {
         rows = sortRows(rows, vendorsState.sortBy, vendorsState.sortDir);
 
         tbody.innerHTML = '';
+        cardContainer.innerHTML = '';
         if (vendorsState.all.length === 0) {
             emptyState.classList.remove('d-none');
             return;
@@ -1238,6 +1615,7 @@ document.addEventListener('DOMContentLoaded', function () {
         emptyState.classList.add('d-none');
         if (rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No vendors match your search.</td></tr>';
+            cardContainer.innerHTML = '<p class="text-muted text-center py-4">No vendors match your search.</p>';
             return;
         }
         rows.forEach(v => {
@@ -1252,11 +1630,32 @@ document.addEventListener('DOMContentLoaded', function () {
             `;
             row.addEventListener('click', () => goToOverviewFiltered({ vendor: v.vendor }));
             tbody.appendChild(row);
+
+            const card = document.createElement('div');
+            card.className = 'entity-card is-clickable';
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(v.vendor)};">${escapeHtml(avatarInitial(v.vendor))}</span>
+                    <div>
+                        <div class="entity-card-title">${escapeHtml(v.vendor)}</div>
+                        <div class="entity-card-subtitle">${v.product_count} product${v.product_count === 1 ? '' : 's'}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    <span class="metric-chip chip-accent">${v.cve_count} CVE${v.cve_count === 1 ? '' : 's'}</span>
+                    ${v.kev_count > 0 ? `<span class="metric-chip chip-kev"><i class="bi bi-bullseye"></i> ${v.kev_count} KEV</span>` : ''}
+                    ${v.critical_count > 0 ? `<span class="metric-chip chip-critical">${v.critical_count} Critical</span>` : ''}
+                    ${v.high_count > 0 ? `<span class="metric-chip chip-high">${v.high_count} High</span>` : ''}
+                </div>
+            `;
+            card.addEventListener('click', () => goToOverviewFiltered({ vendor: v.vendor }));
+            cardContainer.appendChild(card);
         });
     }
 
     function renderProductsTable() {
         const tbody = document.getElementById('products-table-body');
+        const cardContainer = document.getElementById('products-card-view');
         const emptyState = document.getElementById('products-empty-state');
         let rows = productsState.all;
         if (productsState.q) {
@@ -1266,6 +1665,7 @@ document.addEventListener('DOMContentLoaded', function () {
         rows = sortRows(rows, productsState.sortBy, productsState.sortDir);
 
         tbody.innerHTML = '';
+        cardContainer.innerHTML = '';
         if (productsState.all.length === 0) {
             emptyState.classList.remove('d-none');
             return;
@@ -1273,6 +1673,7 @@ document.addEventListener('DOMContentLoaded', function () {
         emptyState.classList.add('d-none');
         if (rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No products match your search.</td></tr>';
+            cardContainer.innerHTML = '<p class="text-muted text-center py-4">No products match your search.</p>';
             return;
         }
         rows.forEach(p => {
@@ -1287,6 +1688,26 @@ document.addEventListener('DOMContentLoaded', function () {
             `;
             row.addEventListener('click', () => goToOverviewFiltered({ vendor: p.vendor, product: p.product }));
             tbody.appendChild(row);
+
+            const card = document.createElement('div');
+            card.className = 'entity-card is-clickable';
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(p.product)};"><i class="bi bi-box-seam-fill"></i></span>
+                    <div>
+                        <div class="entity-card-title">${escapeHtml(p.product)}</div>
+                        <div class="entity-card-subtitle">${escapeHtml(p.vendor || 'Unknown vendor')}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    <span class="metric-chip chip-accent">${p.cve_count} CVE${p.cve_count === 1 ? '' : 's'}</span>
+                    ${p.kev_count > 0 ? `<span class="metric-chip chip-kev"><i class="bi bi-bullseye"></i> ${p.kev_count} KEV</span>` : ''}
+                    ${p.critical_count > 0 ? `<span class="metric-chip chip-critical">${p.critical_count} Critical</span>` : ''}
+                    ${p.high_count > 0 ? `<span class="metric-chip chip-high">${p.high_count} High</span>` : ''}
+                </div>
+            `;
+            card.addEventListener('click', () => goToOverviewFiltered({ vendor: p.vendor, product: p.product }));
+            cardContainer.appendChild(card);
         });
     }
 
@@ -1476,6 +1897,8 @@ document.addEventListener('DOMContentLoaded', function () {
                         fetchArticles();
                         fetchVendors();
                         fetchProducts();
+                        fetchKevCves();
+                        fetchAnalytics();
                     }
                 }
                 wasRunning = data.running;
@@ -1500,7 +1923,26 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(error => console.error('Error starting pipeline run:', error));
     });
 
+    // --- Card / table view toggles (Articles, Vendors, Products, Sources) ---
+    function wireViewToggle(toggleId, cardViewId, tableViewId) {
+        const toggle = document.getElementById(toggleId);
+        toggle.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                toggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const isCard = btn.dataset.view === 'card';
+                document.getElementById(cardViewId).classList.toggle('d-none', !isCard);
+                document.getElementById(tableViewId).classList.toggle('d-none', isCard);
+            });
+        });
+    }
+    wireViewToggle('articles-view-toggle', 'articles-card-view', 'articles-table-view');
+    wireViewToggle('vendors-view-toggle', 'vendors-card-view', 'vendors-table-view');
+    wireViewToggle('products-view-toggle', 'products-card-view', 'products-table-view');
+    wireViewToggle('sources-view-toggle', 'sources-card-view', 'sources-table-view');
+
     // Initial data load
+    switchToTab(pageIdFromHash(), { skipHash: true });
     fetchStats();
     fetchFilters();
     fetchCVEs();
@@ -1509,6 +1951,11 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchProducts();
     fetchSourceTypes();
     fetchSources();
+    fetchKevCves();
+    fetchAnalytics();
+    fetchSettings();
     setDynamicFooter();
     pollPipelineStatus(); // reflect status immediately (e.g. a run already in progress)
+
+    window.addEventListener('hashchange', () => switchToTab(pageIdFromHash(), { skipHash: true }));
 });

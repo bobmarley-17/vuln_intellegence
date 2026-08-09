@@ -9,396 +9,652 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}">
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg app-navbar">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="bi bi-shield-shaded"></i> VulnIntel
-                <span class="navbar-tagline d-none d-md-inline">Vulnerability Intelligence &amp; Checker</span>
-            </a>
-            <div class="d-flex align-items-center gap-2">
-                <span id="pipeline-status" class="pipeline-status d-none d-sm-inline">Idle</span>
-                <button id="theme-toggle" class="btn btn-icon" type="button" title="Toggle light / dark theme" aria-label="Toggle theme">
-                    <i class="bi bi-moon-stars"></i>
-                </button>
-                <button id="run-pipeline-btn" class="btn btn-outline-light" type="button">
-                    <i class="bi bi-play-fill"></i> <span class="d-none d-sm-inline">Run Pipeline</span>
-                </button>
-                <button class="btn btn-accent" type="button" data-bs-toggle="modal" data-bs-target="#addSourceModal">
-                    <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Source</span>
-                </button>
+    <div class="app-shell" id="app-shell">
+        <!-- Sidebar -->
+        <aside class="app-sidebar" id="app-sidebar">
+            <div class="sidebar-brand">
+                <i class="bi bi-shield-shaded"></i>
+                <span class="sidebar-brand-text">VulnIntel</span>
             </div>
-        </div>
-    </nav>
+            <nav class="sidebar-nav" aria-label="Main navigation">
+                <div class="sidebar-section-label">Overview</div>
+                <button type="button" class="sidebar-link" data-target="tab-dashboard" data-title="Dashboard" data-section="Overview">
+                    <i class="bi bi-speedometer2"></i><span class="sidebar-link-label">Dashboard</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-overview" data-title="CVE Explorer" data-section="Overview">
+                    <i class="bi bi-bug"></i><span class="sidebar-link-label">CVE Explorer</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-kev" data-title="Known Exploited Vulnerabilities" data-section="Overview">
+                    <i class="bi bi-exclamation-triangle-fill"></i><span class="sidebar-link-label">KEV</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-analytics" data-title="Analytics" data-section="Overview">
+                    <i class="bi bi-bar-chart-line-fill"></i><span class="sidebar-link-label">Analytics</span>
+                </button>
 
-    <div class="container-fluid app-body">
-        <!-- KPI Row -->
-        <div class="stats-grid mb-4">
-            <div class="stat-tile stat-tile-clickable" id="stat-tile-cves" role="button" tabindex="0" title="View all CVEs">
-                <div class="stat-icon stat-icon-primary"><i class="bi bi-bug-fill"></i></div>
-                <div>
-                    <div id="total-cves" class="value">&hellip;</div>
-                    <div class="label">Total CVEs Tracked</div>
-                </div>
-            </div>
-            <div class="stat-tile stat-tile-clickable" id="stat-tile-articles" role="button" tabindex="0" title="View scanned articles">
-                <div class="stat-icon stat-icon-success"><i class="bi bi-newspaper"></i></div>
-                <div>
-                    <div id="total-articles" class="value">&hellip;</div>
-                    <div class="label">Articles Scanned</div>
-                </div>
-            </div>
-            <div class="stat-tile stat-tile-clickable" id="stat-tile-kev" role="button" tabindex="0" title="View actively exploited CVEs">
-                <div class="stat-icon stat-icon-critical"><i class="bi bi-exclamation-triangle-fill"></i></div>
-                <div>
-                    <div id="kev-count" class="value">&hellip;</div>
-                    <div class="label">Known Exploited (KEV)</div>
-                </div>
-            </div>
-            <div class="stat-tile stat-tile-clickable" id="stat-tile-vendors" role="button" tabindex="0" title="View vendors">
-                <div class="stat-icon stat-icon-info"><i class="bi bi-building-fill"></i></div>
-                <div>
-                    <div id="vendor-count" class="value">&hellip;</div>
-                    <div class="label">Unique Vendors</div>
-                </div>
-            </div>
-            <div class="stat-tile stat-tile-clickable" id="stat-tile-products" role="button" tabindex="0" title="View products">
-                <div class="stat-icon stat-icon-info"><i class="bi bi-box-seam-fill"></i></div>
-                <div>
-                    <div id="product-count" class="value">&hellip;</div>
-                    <div class="label">Products Tracked</div>
-                </div>
-            </div>
-        </div>
+                <div class="sidebar-section-label">Intelligence</div>
+                <button type="button" class="sidebar-link" data-target="tab-checker" data-title="Vulnerability Checker" data-section="Intelligence">
+                    <i class="bi bi-search"></i><span class="sidebar-link-label">Vulnerability Checker</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-articles" data-title="Articles" data-section="Intelligence">
+                    <i class="bi bi-newspaper"></i><span class="sidebar-link-label">Articles</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-vendors" data-title="Vendors" data-section="Intelligence">
+                    <i class="bi bi-building"></i><span class="sidebar-link-label">Vendors</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-products" data-title="Products" data-section="Intelligence">
+                    <i class="bi bi-box-seam"></i><span class="sidebar-link-label">Products</span>
+                </button>
 
-        <!-- Tabs -->
-        <ul class="nav nav-tabs app-tabs" id="mainTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="tab-btn-overview" data-bs-toggle="tab" data-bs-target="#tab-overview" type="button" role="tab">
-                    <i class="bi bi-grid-1x2"></i> Overview
+                <div class="sidebar-section-label">Configuration</div>
+                <button type="button" class="sidebar-link" data-target="tab-sources" data-title="Security Sources" data-section="Configuration">
+                    <i class="bi bi-rss"></i><span class="sidebar-link-label">Sources</span>
                 </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-btn-checker" data-bs-toggle="tab" data-bs-target="#tab-checker" type="button" role="tab">
-                    <i class="bi bi-search"></i> Vulnerability Checker
+                <button type="button" class="sidebar-link" data-target="tab-settings" data-title="Settings" data-section="Configuration">
+                    <i class="bi bi-gear-fill"></i><span class="sidebar-link-label">Settings</span>
                 </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-btn-articles" data-bs-toggle="tab" data-bs-target="#tab-articles" type="button" role="tab">
-                    <i class="bi bi-newspaper"></i> Articles
+            </nav>
+            <div class="sidebar-footer">
+                <button type="button" class="sidebar-collapse-btn" id="sidebar-collapse-btn" title="Collapse sidebar">
+                    <i class="bi bi-chevron-double-left"></i>
+                    <span class="sidebar-link-label">Collapse</span>
                 </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-btn-vendors" data-bs-toggle="tab" data-bs-target="#tab-vendors" type="button" role="tab">
-                    <i class="bi bi-building"></i> Vendors
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-btn-products" data-bs-toggle="tab" data-bs-target="#tab-products" type="button" role="tab">
-                    <i class="bi bi-box-seam"></i> Products
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="tab-btn-sources" data-bs-toggle="tab" data-bs-target="#tab-sources" type="button" role="tab">
-                    <i class="bi bi-rss"></i> Sources
-                </button>
-            </li>
-        </ul>
+            </div>
+        </aside>
 
-        <div class="tab-content app-tab-content">
-            <!-- Overview tab -->
-            <div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
-                <div class="row">
-                    <div class="col-lg-8">
-                        <div class="card app-card mb-4">
-                            <div class="card-header app-card-header d-flex flex-row align-items-center justify-content-between">
-                                <h6 class="m-0">CVE Feed</h6>
-                                <a class="btn btn-secondary btn-sm" data-bs-toggle="collapse" href="#filterCollapse" role="button" aria-expanded="false" aria-controls="filterCollapse">
-                                    <i class="bi bi-funnel-fill"></i> Filters
-                                </a>
+        <!-- Main -->
+        <div class="app-main">
+            <header class="app-header">
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn-icon d-lg-none" id="sidebar-mobile-toggle" aria-label="Toggle navigation">
+                        <i class="bi bi-list"></i>
+                    </button>
+                    <div class="header-titles">
+                        <div class="breadcrumbs">
+                            <span>Home</span>
+                            <span class="crumb-sep">/</span>
+                            <span id="breadcrumb-section">Overview</span>
+                            <span class="crumb-sep">/</span>
+                            <span id="breadcrumb-page">Dashboard</span>
+                        </div>
+                        <h1 class="page-title" id="page-title">Dashboard</h1>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <span id="pipeline-status" class="pipeline-status d-none d-md-inline">Idle</span>
+                    <button id="theme-toggle" class="btn btn-icon" type="button" title="Toggle light / dark theme" aria-label="Toggle theme">
+                        <i class="bi bi-moon-stars"></i>
+                    </button>
+                    <button id="run-pipeline-btn" class="btn btn-outline-secondary" type="button">
+                        <i class="bi bi-play-fill"></i> <span class="d-none d-sm-inline">Run Pipeline</span>
+                    </button>
+                    <button class="btn btn-accent" type="button" data-bs-toggle="modal" data-bs-target="#addSourceModal">
+                        <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Source</span>
+                    </button>
+                    <div class="user-chip" title="Local single-user instance">
+                        <span class="avatar-circle" style="background: var(--avatar-palette-1);"><i class="bi bi-person-fill"></i></span>
+                        <span class="user-chip-name d-none d-md-inline">Analyst</span>
+                    </div>
+                </div>
+            </header>
+
+            <main class="app-content">
+                <!-- Dashboard page -->
+                <div class="app-page active" id="tab-dashboard">
+                    <div class="stats-grid mb-4">
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-cves" role="button" tabindex="0" title="View all CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-primary"><i class="bi bi-bug-fill"></i></div>
                             </div>
-                            <div class="collapse" id="filterCollapse">
-                                <div class="card-body app-filter-bar">
-                                    <form id="filter-form" class="row g-3 align-items-end">
-                                        <div class="col-md-4"><label for="search-input" class="form-label">Search</label><input type="text" class="form-control" id="search-input" placeholder="CVE-ID, product, keyword..."></div>
-                                        <div class="col-md-2"><label for="filter-severity" class="form-label">Severity</label><select id="filter-severity" class="form-select"><option value="">All</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option></select></div>
-                                        <div class="col-md-3"><label for="filter-vendor" class="form-label">Vendor</label><select id="filter-vendor" class="form-select"><option value="">All</option></select></div>
-                                        <div class="col-md-3"><label for="filter-product" class="form-label">Product</label><select id="filter-product" class="form-select"><option value="">All</option></select></div>
-                                        <div class="col-md-3"><label for="filter-source" class="form-label">Source Site</label><select id="filter-source" class="form-select"><option value="">All</option></select></div>
-                                        <div class="col-md-2"><label for="filter-min-cvss" class="form-label">Min CVSS</label><input type="number" step="0.1" min="0" max="10" class="form-control" id="filter-min-cvss"></div>
-                                        <div class="col-md-2"><label for="filter-min-epss" class="form-label">Min EPSS</label><input type="number" step="0.01" min="0" max="1" class="form-control" id="filter-min-epss"></div>
-                                        <div class="col-md-2 d-flex align-items-center pt-3"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="filter-kev"><label class="form-check-label" for="filter-kev">KEV Only</label></div></div>
-                                        <div class="col-md-3"><button type="button" id="filter-btn" class="btn btn-accent">Apply</button> <button type="button" id="reset-btn" class="btn btn-outline-secondary">Reset</button></div>
-                                    </form>
-                                </div>
+                            <div id="total-cves" class="value">&hellip;</div>
+                            <div class="label">Total CVEs Tracked</div>
+                            <div class="trend" id="trend-cves">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-critical" role="button" tabindex="0" title="View critical CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-critical"><i class="bi bi-radioactive"></i></div>
                             </div>
-                            <div class="card-body">
-                                <div class="table-responsive">
-                                    <table class="table table-hover app-table" id="cveTable" width="100%" cellspacing="0">
-                                        <thead>
-                                            <tr>
-                                                <th data-sort="cve_id">CVE ID <span class="sort-icon">&#x2195;</span></th>
-                                                <th>Summary</th>
-                                                <th class="text-center" data-sort="risk_score">Severity <span class="sort-icon">&#x2195;</span></th>
-                                                <th class="text-center" data-sort="risk_score">Risk <span class="sort-icon">&#x2195;</span></th>
-                                                <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
-                                                <th data-sort="published">Published <span class="sort-icon">&#x2195;</span></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="cve-table-body">
-                                            <!-- JS will populate this -->
-                                            <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
-                                        </tbody>
-                                    </table>
-                                </div>
-                                <nav>
-                                    <ul class="pagination justify-content-center" id="pagination">
-                                        <!-- JS will populate this -->
-                                    </ul>
-                                </nav>
+                            <div id="critical-count" class="value">&hellip;</div>
+                            <div class="label">Critical</div>
+                            <div class="trend" id="trend-critical">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-high" role="button" tabindex="0" title="View high severity CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-high"><i class="bi bi-exclamation-diamond-fill"></i></div>
                             </div>
+                            <div id="high-count" class="value">&hellip;</div>
+                            <div class="label">High</div>
+                            <div class="trend" id="trend-high">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-medium" role="button" tabindex="0" title="View medium severity CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-medium"><i class="bi bi-dash-circle-fill"></i></div>
+                            </div>
+                            <div id="medium-count" class="value">&hellip;</div>
+                            <div class="label">Medium</div>
+                            <div class="trend" id="trend-medium">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-low" role="button" tabindex="0" title="View low severity CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-success"><i class="bi bi-check-circle-fill"></i></div>
+                            </div>
+                            <div id="low-count" class="value">&hellip;</div>
+                            <div class="label">Low</div>
+                            <div class="trend" id="trend-low">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-kev" role="button" tabindex="0" title="View actively exploited CVEs">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-critical"><i class="bi bi-bullseye"></i></div>
+                            </div>
+                            <div id="kev-count" class="value">&hellip;</div>
+                            <div class="label">Known Exploited (KEV)</div>
+                            <div class="trend" id="trend-kev">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-articles" role="button" tabindex="0" title="View scanned articles">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-success"><i class="bi bi-newspaper"></i></div>
+                            </div>
+                            <div id="total-articles" class="value">&hellip;</div>
+                            <div class="label">Articles Scanned</div>
+                            <div class="trend" id="trend-articles">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-vendors" role="button" tabindex="0" title="View vendors">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-info"><i class="bi bi-building-fill"></i></div>
+                            </div>
+                            <div id="vendor-count" class="value">&hellip;</div>
+                            <div class="label">Unique Vendors</div>
+                            <div class="trend" id="trend-vendors">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-products" role="button" tabindex="0" title="View products">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-info"><i class="bi bi-box-seam-fill"></i></div>
+                            </div>
+                            <div id="product-count" class="value">&hellip;</div>
+                            <div class="label">Products Tracked</div>
+                            <div class="trend" id="trend-products">&nbsp;</div>
                         </div>
                     </div>
 
-                    <div class="col-lg-4">
-                        <div class="card app-card mb-4">
-                            <div class="card-header app-card-header">
-                                <h6 class="m-0">Severity Distribution</h6>
+                    <div class="row">
+                        <div class="col-lg-7">
+                            <div class="card app-card mb-4">
+                                <div class="card-header app-card-header">
+                                    <h6 class="m-0">Severity Distribution</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="chart-bar-wrap">
+                                        <canvas id="severityChart"></canvas>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="card-body">
-                                <div class="chart-bar-wrap">
-                                    <canvas id="severityChart"></canvas>
+                        </div>
+                        <div class="col-lg-5">
+                            <div class="card app-card mb-4">
+                                <div class="card-header app-card-header d-flex align-items-center justify-content-between">
+                                    <h6 class="m-0">Recently Published</h6>
+                                    <button type="button" class="btn btn-link btn-sm p-0" data-nav="tab-overview">View all &rarr;</button>
+                                </div>
+                                <div class="card-body">
+                                    <div class="recent-cve-list" id="dashboard-recent-cves">
+                                        <div class="text-center text-muted small py-4">Loading&hellip;</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Vulnerability Checker tab -->
-            <div class="tab-pane fade" id="tab-checker" role="tabpanel">
-                <div class="card app-card mb-4">
-                    <div class="card-header app-card-header">
-                        <h6 class="m-0">Check if a product/version is affected</h6>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted small mb-3">
-                            Look up a vendor and product to see every known CVE affecting it. Add a version to get a
-                            per-CVE vulnerable / not-affected verdict based on the affected-version ranges collected
-                            from NVD and CVE.org.
-                        </p>
-                        <form id="checker-form" class="row g-3 align-items-end">
-                            <div class="col-md-3">
-                                <label for="checker-vendor" class="form-label">Vendor <span class="text-muted">(optional)</span></label>
-                                <input type="text" class="form-control" id="checker-vendor" list="checker-vendor-list" placeholder="e.g. Apache">
-                                <datalist id="checker-vendor-list"></datalist>
-                            </div>
-                            <div class="col-md-4">
-                                <label for="checker-product" class="form-label">Product <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" id="checker-product" list="checker-product-list" placeholder="e.g. Tomcat" required>
-                                <datalist id="checker-product-list"></datalist>
-                            </div>
-                            <div class="col-md-3">
-                                <label for="checker-version" class="form-label">Version <span class="text-muted">(optional)</span></label>
-                                <input type="text" class="form-control" id="checker-version" placeholder="e.g. 9.0.80">
-                            </div>
-                            <div class="col-md-2">
-                                <button type="submit" class="btn btn-accent w-100" id="checker-submit-btn">
-                                    <i class="bi bi-search"></i> Check
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <div id="checker-results-wrap" class="d-none">
-                    <div id="checker-summary" class="app-summary-banner mb-3"></div>
+                <!-- CVE Explorer page -->
+                <div class="app-page" id="tab-overview">
                     <div class="card app-card mb-4">
+                        <div class="card-header app-card-header d-flex flex-row align-items-center justify-content-between">
+                            <h6 class="m-0">CVE Feed</h6>
+                            <a class="btn btn-secondary btn-sm" data-bs-toggle="collapse" href="#filterCollapse" role="button" aria-expanded="false" aria-controls="filterCollapse">
+                                <i class="bi bi-funnel-fill"></i> Filters
+                            </a>
+                        </div>
+                        <div class="collapse" id="filterCollapse">
+                            <div class="card-body app-filter-bar">
+                                <form id="filter-form" class="row g-3 align-items-end">
+                                    <div class="col-md-4"><label for="search-input" class="form-label">Search</label><input type="text" class="form-control" id="search-input" placeholder="CVE-ID, product, keyword..."></div>
+                                    <div class="col-md-2"><label for="filter-severity" class="form-label">Severity</label><select id="filter-severity" class="form-select"><option value="">All</option><option value="CRITICAL">Critical</option><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option></select></div>
+                                    <div class="col-md-3"><label for="filter-vendor" class="form-label">Vendor</label><select id="filter-vendor" class="form-select"><option value="">All</option></select></div>
+                                    <div class="col-md-3"><label for="filter-product" class="form-label">Product</label><select id="filter-product" class="form-select"><option value="">All</option></select></div>
+                                    <div class="col-md-3"><label for="filter-source" class="form-label">Source Site</label><select id="filter-source" class="form-select"><option value="">All</option></select></div>
+                                    <div class="col-md-2"><label for="filter-min-cvss" class="form-label">Min CVSS</label><input type="number" step="0.1" min="0" max="10" class="form-control" id="filter-min-cvss"></div>
+                                    <div class="col-md-2"><label for="filter-min-epss" class="form-label">Min EPSS</label><input type="number" step="0.01" min="0" max="1" class="form-control" id="filter-min-epss"></div>
+                                    <div class="col-md-2 d-flex align-items-center pt-3"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="filter-kev"><label class="form-check-label" for="filter-kev">KEV Only</label></div></div>
+                                    <div class="col-md-3"><button type="button" id="filter-btn" class="btn btn-accent">Apply</button> <button type="button" id="reset-btn" class="btn btn-outline-secondary">Reset</button></div>
+                                </form>
+                            </div>
+                        </div>
                         <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-hover app-table" id="checkerTable">
+                            <div class="table-responsive table-scroll">
+                                <table class="table table-hover app-table" id="cveTable" width="100%" cellspacing="0">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="cve_id">CVE ID <span class="sort-icon">&#x2195;</span></th>
+                                            <th>Summary</th>
+                                            <th class="text-center" data-sort="risk_score">Severity <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="risk_score">Risk <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="published">Published <span class="sort-icon">&#x2195;</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="cve-table-body">
+                                        <!-- JS will populate this -->
+                                        <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <nav>
+                                <ul class="pagination justify-content-center" id="pagination">
+                                    <!-- JS will populate this -->
+                                </ul>
+                            </nav>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- KEV page -->
+                <div class="app-page" id="tab-kev">
+                    <div class="card app-card mb-4">
+                        <div class="card-header app-card-header">
+                            <h6 class="m-0">Known Exploited Vulnerabilities</h6>
+                            <p class="section-subtitle mb-0">CVEs confirmed by CISA to be actively exploited in the wild &mdash; prioritize these first.</p>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive table-scroll">
+                                <table class="table table-hover app-table" id="kevTable">
                                     <thead>
                                         <tr>
                                             <th>CVE ID</th>
-                                            <th>Matched Product</th>
+                                            <th>Vendor / Product</th>
                                             <th class="text-center">Severity</th>
                                             <th class="text-center">Risk</th>
-                                            <th>Affected Range</th>
-                                            <th>Fixed In</th>
-                                            <th class="text-center">Status</th>
+                                            <th>KEV Added</th>
+                                            <th>Remediation Due</th>
+                                            <th>Published</th>
                                         </tr>
                                     </thead>
-                                    <tbody id="checker-table-body"></tbody>
+                                    <tbody id="kev-table-body">
+                                        <tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div id="kev-empty-state" class="app-empty-state d-none">
+                                <i class="bi bi-shield-check"></i>
+                                <p>No known-exploited CVEs in the collected intelligence right now.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analytics page -->
+                <div class="app-page" id="tab-analytics">
+                    <div class="chart-grid-2 mb-4">
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">Monthly Vulnerability Trend</h6></div>
+                            <div class="card-body"><div class="chart-wrap-sm"><canvas id="trendChart"></canvas></div></div>
+                        </div>
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">KEV vs Non-KEV</h6></div>
+                            <div class="card-body">
+                                <div class="mini-kev-split">
+                                    <div class="chart-wrap-sm"><canvas id="kevSplitChart"></canvas></div>
+                                    <div class="mini-kev-legend">
+                                        <div><span class="dot" style="background: var(--critical);"></span>KEV <strong id="kev-split-kev">&hellip;</strong></div>
+                                        <div><span class="dot" style="background: var(--chart-axis);"></span>Non-KEV <strong id="kev-split-non-kev">&hellip;</strong></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">CVEs by Vendor</h6></div>
+                            <div class="card-body"><div class="chart-wrap-sm"><canvas id="vendorBarChart"></canvas></div></div>
+                        </div>
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">Top Affected Products</h6></div>
+                            <div class="card-body"><div class="chart-wrap-sm"><canvas id="productBarChart"></canvas></div></div>
+                        </div>
+                    </div>
+                    <div class="card app-card mb-4">
+                        <div class="card-header app-card-header"><h6 class="m-0">Recently Published CVEs</h6></div>
+                        <div class="card-body">
+                            <div class="recent-cve-list" id="analytics-recent-cves">
+                                <div class="text-center text-muted small py-4">Loading&hellip;</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Vulnerability Checker page -->
+                <div class="app-page" id="tab-checker">
+                    <div class="card app-card mb-4">
+                        <div class="card-header app-card-header">
+                            <h6 class="m-0">Check if a product/version is affected</h6>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">
+                                Look up a vendor and product to see every known CVE affecting it. Add a version to get a
+                                per-CVE vulnerable / not-affected verdict based on the affected-version ranges collected
+                                from NVD and CVE.org.
+                            </p>
+                            <form id="checker-form" class="row g-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label for="checker-vendor" class="form-label">Vendor <span class="text-muted">(optional)</span></label>
+                                    <input type="text" class="form-control" id="checker-vendor" list="checker-vendor-list" placeholder="e.g. Apache">
+                                    <datalist id="checker-vendor-list"></datalist>
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="checker-product" class="form-label">Product <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="checker-product" list="checker-product-list" placeholder="e.g. Tomcat" required>
+                                    <datalist id="checker-product-list"></datalist>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="checker-version" class="form-label">Version <span class="text-muted">(optional)</span></label>
+                                    <input type="text" class="form-control" id="checker-version" placeholder="e.g. 9.0.80">
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="submit" class="btn btn-accent w-100" id="checker-submit-btn">
+                                        <i class="bi bi-search"></i> Check
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div id="checker-results-wrap" class="d-none">
+                        <div id="checker-summary" class="app-summary-banner mb-3"></div>
+                        <div class="card app-card mb-4">
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover app-table" id="checkerTable">
+                                        <thead>
+                                            <tr>
+                                                <th>CVE ID</th>
+                                                <th>Matched Product</th>
+                                                <th class="text-center">Severity</th>
+                                                <th class="text-center">Risk</th>
+                                                <th>Affected Range</th>
+                                                <th>Fixed In</th>
+                                                <th class="text-center">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="checker-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="checker-empty-state" class="app-empty-state d-none">
+                        <i class="bi bi-shield-check"></i>
+                        <p>No known CVEs found for this product in the collected intelligence.</p>
+                        <p class="text-muted small">This reflects only what has been enriched so far &mdash; it is not a guarantee of safety.</p>
+                    </div>
+                </div>
+
+                <!-- Articles page -->
+                <div class="app-page" id="tab-articles">
+                    <div class="section-header">
+                        <div>
+                            <h2>Scanned Articles</h2>
+                            <div class="section-subtitle">Every article the scanning engine has pulled CVE mentions from.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="articles-search" placeholder="Search title, site..." style="width: 220px;">
+                            <div class="view-toggle" id="articles-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="articles-card-view" class="card-grid"></div>
+
+                    <div id="articles-table-view" class="card app-card d-none">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover app-table" id="articlesTable">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="title">Title <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="site_name">Site <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="published_date">Published <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="fetched_at">Fetched <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="cve_count">CVEs Found <span class="sort-icon">&#x2195;</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="articles-table-body"></tbody>
                                 </table>
                             </div>
                         </div>
                     </div>
+
+                    <div id="articles-empty-state" class="app-empty-state d-none">
+                        <i class="bi bi-newspaper"></i>
+                        <p>No articles have been scanned yet.</p>
+                    </div>
+                    <nav>
+                        <ul class="pagination justify-content-center" id="articles-pagination"></ul>
+                    </nav>
                 </div>
 
-                <div id="checker-empty-state" class="app-empty-state d-none">
-                    <i class="bi bi-shield-check"></i>
-                    <p>No known CVEs found for this product in the collected intelligence.</p>
-                    <p class="text-muted small">This reflects only what has been enriched so far &mdash; it is not a guarantee of safety.</p>
-                </div>
-            </div>
+                <!-- Vendors page -->
+                <div class="app-page" id="tab-vendors">
+                    <div class="section-header">
+                        <div>
+                            <h2>Vendors</h2>
+                            <div class="section-subtitle">Every vendor identified across tracked CVEs.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="vendors-search" placeholder="Search vendor..." style="width: 200px;">
+                            <div class="view-toggle" id="vendors-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
+                        </div>
+                    </div>
 
-            <!-- Articles tab -->
-            <div class="tab-pane fade" id="tab-articles" role="tabpanel">
-                <div class="card app-card mb-4">
-                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
-                        <h6 class="m-0">Scanned Articles</h6>
-                        <input type="text" class="form-control form-control-sm" id="articles-search" placeholder="Search title, site..." style="width: 240px;">
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover app-table" id="articlesTable">
-                                <thead>
-                                    <tr>
-                                        <th data-sort="title">Title <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="site_name">Site <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="published_date">Published <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="fetched_at">Fetched <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="cve_count">CVEs Found <span class="sort-icon">&#x2195;</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="articles-table-body">
-                                    <tr><td colspan="5" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div id="articles-empty-state" class="app-empty-state d-none">
-                            <i class="bi bi-newspaper"></i>
-                            <p>No articles have been scanned yet.</p>
-                        </div>
-                        <nav>
-                            <ul class="pagination justify-content-center" id="articles-pagination"></ul>
-                        </nav>
-                    </div>
-                </div>
-            </div>
+                    <div id="vendors-card-view" class="card-grid"></div>
 
-            <!-- Vendors tab -->
-            <div class="tab-pane fade" id="tab-vendors" role="tabpanel">
-                <div class="card app-card mb-4">
-                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
-                        <h6 class="m-0">Vendors</h6>
-                        <input type="text" class="form-control form-control-sm" id="vendors-search" placeholder="Search vendor..." style="width: 220px;">
+                    <div id="vendors-table-view" class="card app-card d-none">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover app-table" id="vendorsTable">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="product_count">Products <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="vendors-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover app-table" id="vendorsTable">
-                                <thead>
-                                    <tr>
-                                        <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="product_count">Products <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="vendors-table-body">
-                                    <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div id="vendors-empty-state" class="app-empty-state d-none">
-                            <i class="bi bi-building"></i>
-                            <p>No vendors identified yet.</p>
-                        </div>
+
+                    <div id="vendors-empty-state" class="app-empty-state d-none">
+                        <i class="bi bi-building"></i>
+                        <p>No vendors identified yet.</p>
                     </div>
                 </div>
-            </div>
 
-            <!-- Products tab -->
-            <div class="tab-pane fade" id="tab-products" role="tabpanel">
-                <div class="card app-card mb-4">
-                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
-                        <h6 class="m-0">Products</h6>
-                        <input type="text" class="form-control form-control-sm" id="products-search" placeholder="Search product..." style="width: 220px;">
+                <!-- Products page -->
+                <div class="app-page" id="tab-products">
+                    <div class="section-header">
+                        <div>
+                            <h2>Products</h2>
+                            <div class="section-subtitle">Every product identified across tracked CVEs.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="products-search" placeholder="Search product..." style="width: 200px;">
+                            <div class="view-toggle" id="products-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover app-table" id="productsTable">
-                                <thead>
-                                    <tr>
-                                        <th data-sort="product">Product <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="products-table-body">
-                                    <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
-                                </tbody>
-                            </table>
+
+                    <div id="products-card-view" class="card-grid"></div>
+
+                    <div id="products-table-view" class="card app-card d-none">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover app-table" id="productsTable">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="product">Product <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="cve_count">CVEs <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="kev_count">KEV <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="critical_count">Critical <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="high_count">High <span class="sort-icon">&#x2195;</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="products-table-body"></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <div id="products-empty-state" class="app-empty-state d-none">
-                            <i class="bi bi-box-seam"></i>
-                            <p>No products identified yet.</p>
-                        </div>
+                    </div>
+
+                    <div id="products-empty-state" class="app-empty-state d-none">
+                        <i class="bi bi-box-seam"></i>
+                        <p>No products identified yet.</p>
                     </div>
                 </div>
-            </div>
 
-            <!-- Sources tab -->
-            <div class="tab-pane fade" id="tab-sources" role="tabpanel">
-                <div class="card app-card mb-4">
-                    <div class="card-header app-card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
-                        <h6 class="m-0">Security Sources</h6>
+                <!-- Sources page -->
+                <div class="app-page" id="tab-sources">
+                    <div class="section-header">
+                        <div>
+                            <h2>Security Sources</h2>
+                            <div class="section-subtitle">RSS/XML feeds, blogs, vendor advisories and JSON APIs the scanner monitors.</div>
+                        </div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <input type="text" class="form-control form-control-sm" id="sources-search" placeholder="Search name, URL, vendor..." style="width: 220px;">
-                            <select class="form-select form-select-sm" id="sources-type-filter" style="width: 170px;">
+                            <select class="form-select form-select-sm" id="sources-type-filter" style="width: 160px;">
                                 <option value="">All Types</option>
                             </select>
+                            <div class="view-toggle" id="sources-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
                             <button class="btn btn-accent btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#addSourceModal" id="open-add-source-btn">
                                 <i class="bi bi-plus-circle"></i> Add Source
                             </button>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table app-table" id="sourcesTable">
-                                <thead>
-                                    <tr>
-                                        <th data-sort="name">Name <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="url">URL <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="source_type">Type <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="status">Status <span class="sort-icon">&#x2195;</span></th>
-                                        <th data-sort="last_checked">Last Scan <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="last_articles_processed">Articles <span class="sort-icon">&#x2195;</span></th>
-                                        <th class="text-center" data-sort="cves_found">CVEs <span class="sort-icon">&#x2195;</span></th>
-                                        <th>Last Error</th>
-                                        <th class="text-center">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="sources-table-body">
-                                    <tr><td colspan="9" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
-                                </tbody>
-                            </table>
+
+                    <div id="sources-card-view" class="card-grid"></div>
+
+                    <div id="sources-table-view" class="card app-card d-none">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table app-table" id="sourcesTable">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="name">Name <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="url">URL <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="source_type">Type <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="status">Status <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="last_checked">Last Scan <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="last_articles_processed">Articles <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="cves_found">CVEs <span class="sort-icon">&#x2195;</span></th>
+                                            <th>Last Error</th>
+                                            <th class="text-center">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="sources-table-body"></tbody>
+                                </table>
+                            </div>
                         </div>
-                        <div id="sources-empty-state" class="app-empty-state d-none">
-                            <i class="bi bi-rss"></i>
-                            <p>No security sources configured yet.</p>
-                            <p class="text-muted small">Add an RSS feed, security blog, vendor advisory page, or JSON API to start scanning for CVEs.</p>
+                    </div>
+
+                    <div id="sources-empty-state" class="app-empty-state d-none">
+                        <i class="bi bi-rss"></i>
+                        <p>No security sources configured yet.</p>
+                        <p class="text-muted small">Add an RSS feed, security blog, vendor advisory page, or JSON API to start scanning for CVEs.</p>
+                    </div>
+                    <nav>
+                        <ul class="pagination justify-content-center" id="sources-pagination"></ul>
+                    </nav>
+                </div>
+
+                <!-- Settings page -->
+                <div class="app-page" id="tab-settings">
+                    <div class="row">
+                        <div class="col-lg-7">
+                            <div class="card app-card mb-4">
+                                <div class="card-header app-card-header"><h6 class="m-0">Pipeline Configuration</h6></div>
+                                <div class="card-body">
+                                    <p class="text-muted small">
+                                        These values come from environment variables / <code>config.yaml</code> and are
+                                        read-only here &mdash; there's no in-app settings editor yet, so this is a status
+                                        view rather than a form that would silently do nothing.
+                                    </p>
+                                    <div class="settings-group">
+                                        <h6>Network</h6>
+                                        <div class="settings-row"><span class="settings-row-label">Request timeout</span><span class="settings-row-value" id="setting-timeout">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Max retries</span><span class="settings-row-value" id="setting-retries">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Backoff factor</span><span class="settings-row-value" id="setting-backoff">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Concurrency</span><span class="settings-row-value" id="setting-concurrency">&hellip;</span></div>
+                                    </div>
+                                    <div class="settings-group">
+                                        <h6>NVD</h6>
+                                        <div class="settings-row"><span class="settings-row-label">API key configured</span><span class="settings-row-value" id="setting-nvd-key">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Rate limit delay</span><span class="settings-row-value" id="setting-nvd-delay">&hellip;</span></div>
+                                    </div>
+                                    <div class="settings-group">
+                                        <h6>Storage</h6>
+                                        <div class="settings-row"><span class="settings-row-label">Cache TTL</span><span class="settings-row-value" id="setting-cache-ttl">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Cache folder</span><span class="settings-row-value" id="setting-cache-folder">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Reports folder</span><span class="settings-row-value" id="setting-output-folder">&hellip;</span></div>
+                                        <div class="settings-row"><span class="settings-row-label">Log folder</span><span class="settings-row-value" id="setting-log-folder">&hellip;</span></div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <nav>
-                            <ul class="pagination justify-content-center" id="sources-pagination"></ul>
-                        </nav>
+                        <div class="col-lg-5">
+                            <div class="card app-card mb-4">
+                                <div class="card-header app-card-header"><h6 class="m-0">Appearance</h6></div>
+                                <div class="card-body">
+                                    <div class="settings-row">
+                                        <span class="settings-row-label">Theme</span>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="settings-theme-toggle">
+                                            <i class="bi bi-moon-stars"></i> Toggle light / dark
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card app-card mb-4">
+                                <div class="card-header app-card-header"><h6 class="m-0">About</h6></div>
+                                <div class="card-body">
+                                    <p class="mb-1"><strong>VulnIntel</strong> &mdash; Vulnerability Intelligence &amp; Checker</p>
+                                    <p class="text-muted small mb-0">
+                                        Aggregates security articles and feeds, enriches CVE mentions against NVD, CVE.org,
+                                        EPSS and CISA KEV, and scores risk locally. No data leaves your machine except the
+                                        outbound lookups to those sources.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
+            </main>
+
+            <footer class="app-footer">
+                <div class="d-flex align-items-center justify-content-center small">
+                    <div id="copyright-year" class="text-muted">Copyright &copy; VulnIntel 2024</div>
+                </div>
+            </footer>
         </div>
     </div>
-
-    <footer class="app-footer">
-        <div class="container-fluid px-4">
-            <div class="d-flex align-items-center justify-content-center small">
-                <div id="copyright-year" class="text-muted">Copyright &copy; VulnIntel 2024</div>
-            </div>
-        </div>
-    </footer>
 
     <!-- CVE Detail Modal -->
     <div class="modal fade" id="cveDetailModal" tabindex="-1" aria-labelledby="cveDetailModalLabel" aria-hidden="true">
