@@ -47,10 +47,14 @@ class SourceFetcher:
         source_type = source.get("source_type") or DEFAULT_SOURCE_TYPE
         url = source["url"]
         if source_type in _FEED_TYPES:
-            return self._fetch_feed(url)
-        if source_type == "json_api":
-            return self._fetch_json_api(url)
-        return self._fetch_html(url)
+            articles = self._fetch_feed(url)
+        elif source_type == "json_api":
+            articles = self._fetch_json_api(url)
+        else:
+            articles = self._fetch_html(url)
+        for article in articles:
+            article.source_id = source.get("id")
+        return articles
 
     def _fetch_html(self, url: str) -> list[Article]:
         html = self.downloader.fetch(url)

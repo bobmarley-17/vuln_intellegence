@@ -91,6 +91,11 @@ _SOURCE_LIST_COLUMNS = (
 
 _UPDATABLE_SOURCE_FIELDS = {"name", "url", "source_type", "vendor", "polling_interval_minutes", "enabled"}
 
+# Added after articles shipped without a source link -- feed/API scans
+# produce article URLs that don't equal the source's own URL, so there was
+# no way to trace an article back to the source that found it.
+_ARTICLE_MIGRATED_COLUMNS = {"source_id": "INTEGER"}
+
 
 class DuplicateSourceError(Exception):
     """Raised when a source URL already exists in the database."""
@@ -121,14 +126,15 @@ class VulnCache:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
-            self._migrate_source_columns(conn)
+            self._migrate_columns(conn, "source_urls", _SOURCE_MIGRATED_COLUMNS)
+            self._migrate_columns(conn, "articles", _ARTICLE_MIGRATED_COLUMNS)
 
     @staticmethod
-    def _migrate_source_columns(conn: sqlite3.Connection) -> None:
-        existing = {row["name"] for row in conn.execute("PRAGMA table_info(source_urls)").fetchall()}
-        for column, ddl in _SOURCE_MIGRATED_COLUMNS.items():
+    def _migrate_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for column, ddl in columns.items():
             if column not in existing:
-                conn.execute(f"ALTER TABLE source_urls ADD COLUMN {column} {ddl}")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     # ------------------------------------------------------------------
     # Articles
@@ -140,17 +146,18 @@ class VulnCache:
 
     def save_article(self, article: Article) -> int:
         with self._connect() as conn:
-            cur = conn.execute(
+            conn.execute(
                 """
-                INSERT INTO articles (url, title, author, published_date, site_name, content, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO articles (url, title, author, published_date, site_name, content, fetched_at, source_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(url) DO UPDATE SET
                     title=excluded.title,
                     author=excluded.author,
                     published_date=excluded.published_date,
                     site_name=excluded.site_name,
                     content=excluded.content,
-                    fetched_at=excluded.fetched_at
+                    fetched_at=excluded.fetched_at,
+                    source_id=excluded.source_id
                 """,
                 (
                     article.url,
@@ -160,6 +167,7 @@ class VulnCache:
                     article.site_name,
                     article.content,
                     article.fetched_at,
+                    article.source_id,
                 ),
             )
             # SQLite's lastrowid is not reliable on the UPDATE side of an
@@ -177,7 +185,14 @@ class VulnCache:
 
     def get_articles(self) -> list[dict]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM articles ORDER BY fetched_at DESC").fetchall()
+            rows = conn.execute(
+                """
+                SELECT a.*, s.name AS source_name
+                FROM articles a
+                LEFT JOIN source_urls s ON s.id = a.source_id
+                ORDER BY a.fetched_at DESC
+                """
+            ).fetchall()
             articles = []
             for row in rows:
                 d = dict(row)
@@ -338,6 +353,24 @@ class VulnCache:
                 "SELECT * FROM scan_history WHERE source_id = ? ORDER BY scan_time DESC LIMIT ?",
                 (source_id, limit),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_scan_history(self, source_id: int | None = None, limit: int = 300) -> list[dict]:
+        """Scan history across every source, newest first, for the
+        dedicated Scan History page. Optionally scoped to one source."""
+        query = """
+            SELECT h.*, s.name AS source_name, s.url AS source_url, s.source_type AS source_type
+            FROM scan_history h
+            LEFT JOIN source_urls s ON s.id = h.source_id
+        """
+        params: list = []
+        if source_id is not None:
+            query += " WHERE h.source_id = ?"
+            params.append(source_id)
+        query += " ORDER BY h.scan_time DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------

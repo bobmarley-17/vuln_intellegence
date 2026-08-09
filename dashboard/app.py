@@ -260,6 +260,7 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         no separate storage, so it's always consistent with the rest of
         the dashboard."""
         cves = cache.get_all_cves()
+        articles = cache.get_articles()
 
         monthly_counts: dict[str, int] = {}
         for c in cves:
@@ -269,6 +270,17 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             key = f"{published.year:04d}-{published.month:02d}"
             monthly_counts[key] = monthly_counts.get(key, 0) + 1
         monthly_trend = [{"month": k, "count": monthly_counts[k]} for k in sorted(monthly_counts)[-12:]]
+
+        article_monthly_counts: dict[str, int] = {}
+        for a in articles:
+            fetched = _parse_iso_date(a.get("fetched_at"))
+            if not fetched:
+                continue
+            key = f"{fetched.year:04d}-{fetched.month:02d}"
+            article_monthly_counts[key] = article_monthly_counts.get(key, 0) + 1
+        articles_trend = [
+            {"month": k, "count": article_monthly_counts[k]} for k in sorted(article_monthly_counts)[-12:]
+        ]
 
         vendor_counts: dict[str, int] = {}
         product_counts: dict[str, int] = {}
@@ -289,6 +301,7 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         return jsonify(
             {
                 "monthly_trend": monthly_trend,
+                "articles_trend": articles_trend,
                 "vendor_bar": [{"vendor": v, "count": n} for v, n in top_vendors],
                 "product_bar": [{"product": p, "count": n} for p, n in top_products],
                 "kev_vs_non_kev": {"kev": kev_count, "non_kev": len(cves) - kev_count},
@@ -404,6 +417,16 @@ def create_app(config: Config, debug: bool = False) -> Flask:
     @app.route("/api/articles")
     def api_articles():
         articles = cache.get_articles()
+
+        # Articles don't carry their own severity -- derive "highest severity
+        # among the CVEs this article mentions" from the CVE cache so the
+        # Security Intelligence cards can show something meaningful.
+        severity_by_cve = {c.cve_id: (c.risk_level or "").upper() for c in cache.get_all_cves()}
+        for a in articles:
+            levels = [severity_by_cve.get(cve_id) for cve_id in a.get("cves") or []]
+            levels = [lvl for lvl in levels if lvl in SEVERITY_ORDER]
+            a["highest_severity"] = min(levels, key=lambda lvl: SEVERITY_ORDER[lvl]).title() if levels else None
+
         q = (request.args.get("q") or "").strip().lower()
         if q:
             articles = [
@@ -606,6 +629,13 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             return jsonify({"error": "Source not found"}), 404
         return jsonify(cache.get_scan_history(source_id))
 
+    @app.route("/api/scan-history")
+    def api_scan_history():
+        """Scan history across every source, for the dedicated Scan History
+        page. Optionally scoped to one source via ?source_id=."""
+        source_id = request.args.get("source_id", type=int)
+        return jsonify(cache.get_all_scan_history(source_id=source_id))
+
     @app.route("/api/sources/test", methods=["POST"])
     def api_test_source():
         """Connection test usable both before a source is saved (Add modal)
@@ -665,6 +695,7 @@ def _apply_filters(cves: list[EnrichedCVE], args) -> list[EnrichedCVE]:
     vendor = args.get("vendor")
     product = args.get("product")
     min_cvss = args.get("min_cvss", type=float)
+    max_cvss = args.get("max_cvss", type=float)
     min_epss = args.get("min_epss", type=float)
     kev_only = args.get("kev_only") == "true"
     published_after = args.get("published_after")
@@ -679,6 +710,8 @@ def _apply_filters(cves: list[EnrichedCVE], args) -> list[EnrichedCVE]:
         result = [c for c in result if (c.product or "").lower() == product.lower()]
     if min_cvss is not None:
         result = [c for c in result if (_cvss_score(c) or 0) >= min_cvss]
+    if max_cvss is not None:
+        result = [c for c in result if (_cvss_score(c) or 0) <= max_cvss]
     if min_epss is not None:
         result = [c for c in result if (c.epss_score or 0) >= min_epss]
     if kev_only:

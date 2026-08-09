@@ -17,39 +17,44 @@
                 <span class="sidebar-brand-text">VulnIntel</span>
             </div>
             <nav class="sidebar-nav" aria-label="Main navigation">
-                <div class="sidebar-section-label">Overview</div>
-                <button type="button" class="sidebar-link" data-target="tab-dashboard" data-title="Dashboard" data-section="Overview">
+                <button type="button" class="sidebar-link" data-target="tab-dashboard" data-title="Dashboard" data-section="Dashboard">
                     <i class="bi bi-speedometer2"></i><span class="sidebar-link-label">Dashboard</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-overview" data-title="CVE Explorer" data-section="Overview">
+
+                <div class="sidebar-section-label">Vulnerability Intelligence</div>
+                <button type="button" class="sidebar-link" data-target="tab-overview" data-title="CVE Explorer" data-section="Vulnerability Intelligence">
                     <i class="bi bi-bug"></i><span class="sidebar-link-label">CVE Explorer</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-kev" data-title="Known Exploited Vulnerabilities" data-section="Overview">
-                    <i class="bi bi-exclamation-triangle-fill"></i><span class="sidebar-link-label">KEV</span>
-                </button>
-                <button type="button" class="sidebar-link" data-target="tab-analytics" data-title="Analytics" data-section="Overview">
-                    <i class="bi bi-bar-chart-line-fill"></i><span class="sidebar-link-label">Analytics</span>
-                </button>
-
-                <div class="sidebar-section-label">Intelligence</div>
-                <button type="button" class="sidebar-link" data-target="tab-checker" data-title="Vulnerability Checker" data-section="Intelligence">
+                <button type="button" class="sidebar-link" data-target="tab-checker" data-title="Vulnerability Checker" data-section="Vulnerability Intelligence">
                     <i class="bi bi-search"></i><span class="sidebar-link-label">Vulnerability Checker</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-articles" data-title="Articles" data-section="Intelligence">
-                    <i class="bi bi-newspaper"></i><span class="sidebar-link-label">Articles</span>
+                <button type="button" class="sidebar-link" data-target="tab-articles" data-title="Security Intelligence" data-section="Vulnerability Intelligence">
+                    <i class="bi bi-newspaper"></i><span class="sidebar-link-label">Security Intelligence</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-vendors" data-title="Vendors" data-section="Intelligence">
+                <button type="button" class="sidebar-link" data-target="tab-kev" data-title="KEV Catalog" data-section="Vulnerability Intelligence">
+                    <i class="bi bi-exclamation-triangle-fill"></i><span class="sidebar-link-label">KEV Catalog</span>
+                </button>
+
+                <div class="sidebar-section-label">Asset Intelligence</div>
+                <button type="button" class="sidebar-link" data-target="tab-vendors" data-title="Vendors" data-section="Asset Intelligence">
                     <i class="bi bi-building"></i><span class="sidebar-link-label">Vendors</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-products" data-title="Products" data-section="Intelligence">
+                <button type="button" class="sidebar-link" data-target="tab-products" data-title="Products" data-section="Asset Intelligence">
                     <i class="bi bi-box-seam"></i><span class="sidebar-link-label">Products</span>
                 </button>
 
-                <div class="sidebar-section-label">Configuration</div>
-                <button type="button" class="sidebar-link" data-target="tab-sources" data-title="Security Sources" data-section="Configuration">
-                    <i class="bi bi-rss"></i><span class="sidebar-link-label">Sources</span>
+                <div class="sidebar-section-label">Collection</div>
+                <button type="button" class="sidebar-link" data-target="tab-sources" data-title="Security Sources" data-section="Collection">
+                    <i class="bi bi-rss"></i><span class="sidebar-link-label">Security Sources</span>
                 </button>
-                <button type="button" class="sidebar-link" data-target="tab-settings" data-title="Settings" data-section="Configuration">
+                <button type="button" class="sidebar-link" data-target="tab-scan-history" data-title="Scan History" data-section="Collection">
+                    <i class="bi bi-clock-history"></i><span class="sidebar-link-label">Scan History</span>
+                </button>
+
+                <button type="button" class="sidebar-link" data-target="tab-analytics" data-title="Analytics" data-section="Analytics">
+                    <i class="bi bi-bar-chart-line-fill"></i><span class="sidebar-link-label">Analytics</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-settings" data-title="Settings" data-section="Settings">
                     <i class="bi bi-gear-fill"></i><span class="sidebar-link-label">Settings</span>
                 </button>
             </nav>
@@ -207,11 +212,17 @@
                 <!-- CVE Explorer page -->
                 <div class="app-page" id="tab-overview">
                     <div class="card app-card mb-4">
-                        <div class="card-header app-card-header d-flex flex-row align-items-center justify-content-between">
-                            <h6 class="m-0">CVE Feed</h6>
-                            <a class="btn btn-secondary btn-sm" data-bs-toggle="collapse" href="#filterCollapse" role="button" aria-expanded="false" aria-controls="filterCollapse">
-                                <i class="bi bi-funnel-fill"></i> Filters
-                            </a>
+                        <div class="card-header app-card-header d-flex flex-row align-items-center justify-content-between flex-wrap gap-2">
+                            <div>
+                                <h6 class="m-0">CVE Feed</h6>
+                                <div class="section-subtitle" id="cve-summary-line">&nbsp;</div>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="cve-export-btn"><i class="bi bi-download"></i> Export CSV</button>
+                                <a class="btn btn-secondary btn-sm" data-bs-toggle="collapse" href="#filterCollapse" role="button" aria-expanded="false" aria-controls="filterCollapse">
+                                    <i class="bi bi-funnel-fill"></i> Filters
+                                </a>
+                            </div>
                         </div>
                         <div class="collapse" id="filterCollapse">
                             <div class="card-body app-filter-bar">
@@ -222,6 +233,7 @@
                                     <div class="col-md-3"><label for="filter-product" class="form-label">Product</label><select id="filter-product" class="form-select"><option value="">All</option></select></div>
                                     <div class="col-md-3"><label for="filter-source" class="form-label">Source Site</label><select id="filter-source" class="form-select"><option value="">All</option></select></div>
                                     <div class="col-md-2"><label for="filter-min-cvss" class="form-label">Min CVSS</label><input type="number" step="0.1" min="0" max="10" class="form-control" id="filter-min-cvss"></div>
+                                    <div class="col-md-2"><label for="filter-max-cvss" class="form-label">Max CVSS</label><input type="number" step="0.1" min="0" max="10" class="form-control" id="filter-max-cvss"></div>
                                     <div class="col-md-2"><label for="filter-min-epss" class="form-label">Min EPSS</label><input type="number" step="0.01" min="0" max="1" class="form-control" id="filter-min-epss"></div>
                                     <div class="col-md-2 d-flex align-items-center pt-3"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="filter-kev"><label class="form-check-label" for="filter-kev">KEV Only</label></div></div>
                                     <div class="col-md-3"><button type="button" id="filter-btn" class="btn btn-accent">Apply</button> <button type="button" id="reset-btn" class="btn btn-outline-secondary">Reset</button></div>
@@ -236,14 +248,17 @@
                                             <th data-sort="cve_id">CVE ID <span class="sort-icon">&#x2195;</span></th>
                                             <th>Summary</th>
                                             <th class="text-center" data-sort="risk_score">Severity <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="cvss">CVSS <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center" data-sort="epss">EPSS <span class="sort-icon">&#x2195;</span></th>
                                             <th class="text-center" data-sort="risk_score">Risk <span class="sort-icon">&#x2195;</span></th>
                                             <th data-sort="vendor">Vendor <span class="sort-icon">&#x2195;</span></th>
                                             <th data-sort="published">Published <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="modified">Updated <span class="sort-icon">&#x2195;</span></th>
                                         </tr>
                                     </thead>
                                     <tbody id="cve-table-body">
                                         <!-- JS will populate this -->
-                                        <tr><td colspan="6" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                        <tr><td colspan="9" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -256,13 +271,16 @@
                     </div>
                 </div>
 
-                <!-- KEV page -->
+                <!-- KEV Catalog page -->
                 <div class="app-page" id="tab-kev">
-                    <div class="card app-card mb-4">
-                        <div class="card-header app-card-header">
-                            <h6 class="m-0">Known Exploited Vulnerabilities</h6>
-                            <p class="section-subtitle mb-0">CVEs confirmed by CISA to be actively exploited in the wild &mdash; prioritize these first.</p>
+                    <div class="section-header">
+                        <div>
+                            <h2>KEV Catalog</h2>
+                            <div class="section-subtitle" id="kev-summary-line">CVEs confirmed by CISA to be actively exploited in the wild &mdash; prioritize these first.</div>
                         </div>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="kev-export-btn"><i class="bi bi-download"></i> Export CSV</button>
+                    </div>
+                    <div class="card app-card mb-4">
                         <div class="card-body">
                             <div class="table-responsive table-scroll">
                                 <table class="table table-hover app-table" id="kevTable">
@@ -275,10 +293,11 @@
                                             <th>KEV Added</th>
                                             <th>Remediation Due</th>
                                             <th>Published</th>
+                                            <th>Mitigation Guidance</th>
                                         </tr>
                                     </thead>
                                     <tbody id="kev-table-body">
-                                        <tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                        <tr><td colspan="8" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -316,6 +335,14 @@
                         <div class="card app-card">
                             <div class="card-header app-card-header"><h6 class="m-0">Top Affected Products</h6></div>
                             <div class="card-body"><div class="chart-wrap-sm"><canvas id="productBarChart"></canvas></div></div>
+                        </div>
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">Articles Processed Over Time</h6></div>
+                            <div class="card-body"><div class="chart-wrap-sm"><canvas id="articlesTrendChart"></canvas></div></div>
+                        </div>
+                        <div class="card app-card">
+                            <div class="card-header app-card-header"><h6 class="m-0">Source Effectiveness</h6></div>
+                            <div class="card-body"><div class="chart-wrap-sm"><canvas id="sourceEffectivenessChart"></canvas></div></div>
                         </div>
                     </div>
                     <div class="card app-card mb-4">
@@ -395,12 +422,12 @@
                     </div>
                 </div>
 
-                <!-- Articles page -->
+                <!-- Security Intelligence page (individual articles) -->
                 <div class="app-page" id="tab-articles">
                     <div class="section-header">
                         <div>
-                            <h2>Scanned Articles</h2>
-                            <div class="section-subtitle">Every article the scanning engine has pulled CVE mentions from.</div>
+                            <h2>Security Intelligence</h2>
+                            <div class="section-subtitle" id="articles-summary-line">Every article the scanning engine has pulled CVE mentions from.</div>
                         </div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <input type="text" class="form-control form-control-sm" id="articles-search" placeholder="Search title, site..." style="width: 220px;">
@@ -408,6 +435,7 @@
                                 <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
                                 <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
                             </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="articles-export-btn"><i class="bi bi-download"></i> Export CSV</button>
                         </div>
                     </div>
 
@@ -420,10 +448,11 @@
                                     <thead>
                                         <tr>
                                             <th data-sort="title">Title <span class="sort-icon">&#x2195;</span></th>
-                                            <th data-sort="site_name">Site <span class="sort-icon">&#x2195;</span></th>
+                                            <th data-sort="source_name">Source <span class="sort-icon">&#x2195;</span></th>
                                             <th data-sort="published_date">Published <span class="sort-icon">&#x2195;</span></th>
                                             <th data-sort="fetched_at">Fetched <span class="sort-icon">&#x2195;</span></th>
                                             <th class="text-center" data-sort="cve_count">CVEs Found <span class="sort-icon">&#x2195;</span></th>
+                                            <th class="text-center">Highest Severity</th>
                                         </tr>
                                     </thead>
                                     <tbody id="articles-table-body"></tbody>
@@ -446,7 +475,7 @@
                     <div class="section-header">
                         <div>
                             <h2>Vendors</h2>
-                            <div class="section-subtitle">Every vendor identified across tracked CVEs.</div>
+                            <div class="section-subtitle" id="vendors-summary-line">Every vendor identified across tracked CVEs.</div>
                         </div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <input type="text" class="form-control form-control-sm" id="vendors-search" placeholder="Search vendor..." style="width: 200px;">
@@ -454,6 +483,7 @@
                                 <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
                                 <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
                             </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vendors-export-btn"><i class="bi bi-download"></i> Export CSV</button>
                         </div>
                     </div>
 
@@ -490,7 +520,7 @@
                     <div class="section-header">
                         <div>
                             <h2>Products</h2>
-                            <div class="section-subtitle">Every product identified across tracked CVEs.</div>
+                            <div class="section-subtitle" id="products-summary-line">Every product identified across tracked CVEs.</div>
                         </div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <input type="text" class="form-control form-control-sm" id="products-search" placeholder="Search product..." style="width: 200px;">
@@ -498,6 +528,7 @@
                                 <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
                                 <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
                             </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="products-export-btn"><i class="bi bi-download"></i> Export CSV</button>
                         </div>
                     </div>
 
@@ -534,7 +565,7 @@
                     <div class="section-header">
                         <div>
                             <h2>Security Sources</h2>
-                            <div class="section-subtitle">RSS/XML feeds, blogs, vendor advisories and JSON APIs the scanner monitors.</div>
+                            <div class="section-subtitle" id="sources-summary-line">RSS/XML feeds, blogs, vendor advisories and JSON APIs the scanner monitors.</div>
                         </div>
                         <div class="d-flex flex-wrap align-items-center gap-2">
                             <input type="text" class="form-control form-control-sm" id="sources-search" placeholder="Search name, URL, vendor..." style="width: 220px;">
@@ -545,6 +576,7 @@
                                 <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
                                 <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
                             </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="sources-export-btn"><i class="bi bi-download"></i> Export CSV</button>
                             <button class="btn btn-accent btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#addSourceModal" id="open-add-source-btn">
                                 <i class="bi bi-plus-circle"></i> Add Source
                             </button>
@@ -584,6 +616,48 @@
                     <nav>
                         <ul class="pagination justify-content-center" id="sources-pagination"></ul>
                     </nav>
+                </div>
+
+                <!-- Scan History page -->
+                <div class="app-page" id="tab-scan-history">
+                    <div class="section-header">
+                        <div>
+                            <h2>Scan History</h2>
+                            <div class="section-subtitle" id="scan-history-summary-line">Every scan attempt across every source, newest first.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <select class="form-select form-select-sm" id="scan-history-source-filter" style="width: 220px;">
+                                <option value="">All Sources</option>
+                            </select>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="scan-history-export-btn"><i class="bi bi-download"></i> Export CSV</button>
+                        </div>
+                    </div>
+                    <div class="card app-card mb-4">
+                        <div class="card-body">
+                            <div class="table-responsive table-scroll">
+                                <table class="table app-table" id="scanHistoryTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Source</th>
+                                            <th>Scan Time</th>
+                                            <th class="text-center">Status</th>
+                                            <th class="text-center">Duration</th>
+                                            <th class="text-center">Articles</th>
+                                            <th class="text-center">CVEs Found</th>
+                                            <th>Error</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="scan-history-table-body">
+                                        <tr><td colspan="7" class="text-center p-5"><div class="spinner-border text-accent" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div id="scan-history-empty-state" class="app-empty-state d-none">
+                                <i class="bi bi-clock-history"></i>
+                                <p>No scans recorded yet.</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Settings page -->
@@ -653,6 +727,60 @@
                     <div id="copyright-year" class="text-muted">Copyright &copy; VulnIntel 2024</div>
                 </div>
             </footer>
+        </div>
+    </div>
+
+    <!-- Article Detail Modal (Security Intelligence) -->
+    <div class="modal fade" id="articleDetailModal" tabindex="-1" aria-labelledby="articleDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="articleDetailModalLabel">Article Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="article-detail-body">
+                    <div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vendor Detail Modal -->
+    <div class="modal fade" id="vendorDetailModal" tabindex="-1" aria-labelledby="vendorDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="vendorDetailModalLabel">Vendor Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="vendor-detail-body">
+                    <div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Product Detail Modal -->
+    <div class="modal fade" id="productDetailModal" tabindex="-1" aria-labelledby="productDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="productDetailModalLabel">Product Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="product-detail-body">
+                    <div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
         </div>
     </div>
 

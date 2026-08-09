@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', function () {
     let kevSplitChart = null;
     let vendorBarChart = null;
     let productBarChart = null;
+    let articlesTrendChart = null;
+    let sourceEffectivenessChart = null;
 
     const state = {
         page: 1,
@@ -16,6 +18,7 @@ document.addEventListener('DOMContentLoaded', function () {
         vendor: '',
         product: '',
         min_cvss: '',
+        max_cvss: '',
         min_epss: '',
         kev_only: false,
         source_site: '',
@@ -117,6 +120,13 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(data => {
                 sourcesState.all = data;
                 renderSourcesTable();
+                renderSourceEffectivenessChart();
+                populateScanHistorySourceFilter();
+                const el = document.getElementById('sources-summary-line');
+                if (el) {
+                    const enabledCount = data.filter(s => s.enabled).length;
+                    el.textContent = `${data.length} source${data.length === 1 ? '' : 's'} configured (${enabledCount} enabled).`;
+                }
             })
             .catch(error => console.error('Error fetching sources:', error));
     }
@@ -136,10 +146,8 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(error => console.error('Error fetching source types:', error));
     }
 
-    function fetchCVEs() {
-        const params = new URLSearchParams({
-            page: state.page,
-            page_size: state.pageSize,
+    function cveFilterParams(overrides = {}) {
+        return new URLSearchParams({
             sort_by: state.sortBy,
             sort_dir: state.sortDir,
             q: state.q,
@@ -147,17 +155,23 @@ document.addEventListener('DOMContentLoaded', function () {
             vendor: state.vendor,
             product: state.product,
             min_cvss: state.min_cvss,
+            max_cvss: state.max_cvss,
             min_epss: state.min_epss,
             kev_only: state.kev_only,
             source_site: state.source_site,
+            ...overrides,
         });
+    }
 
-        const url = `${API_BASE}/cves?${params.toString()}`;
-        fetch(url)
+    function fetchCVEs() {
+        const params = cveFilterParams({ page: state.page, page_size: state.pageSize });
+        fetch(`${API_BASE}/cves?${params.toString()}`)
             .then(response => response.json())
             .then(data => {
                 renderTable(data.items);
                 renderPagination(data.total, data.page, data.page_size);
+                const el = document.getElementById('cve-summary-line');
+                if (el) el.textContent = `${data.total} CVE${data.total === 1 ? '' : 's'} match your filters.`;
             })
             .catch(error => console.error('Error fetching CVEs:', error));
     }
@@ -241,11 +255,14 @@ document.addEventListener('DOMContentLoaded', function () {
         else if (action === 'delete') openDeleteSourceModal(id);
     }
 
+    let lastFilteredSources = [];
+
     function renderSourcesTable() {
         const tbody = document.getElementById('sources-table-body');
         const cardContainer = document.getElementById('sources-card-view');
         const emptyState = document.getElementById('sources-empty-state');
         const filtered = getFilteredSortedSources();
+        lastFilteredSources = filtered;
 
         if (sourcesState.all.length === 0) {
             tbody.innerHTML = '';
@@ -351,7 +368,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const tbody = document.getElementById('cve-table-body');
         tbody.innerHTML = '';
         if (cves.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center">No CVEs found.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center">No CVEs found.</td></tr>';
             return;
         }
         cves.forEach(cve => {
@@ -366,9 +383,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 </td>
                 <td>${escapeHtml(cve.summary || (cve.description ? `${cve.description.slice(0, 150)}...` : 'No description'))}</td>
                 <td class="text-center"><span class="badge badge-${riskLevel(cve.risk_level).toUpperCase()}">${escapeHtml(cve.risk_level || 'Not Available')}</span></td>
+                <td class="text-center">${cve.cvss_score !== null && cve.cvss_score !== undefined ? cve.cvss_score.toFixed(1) : 'N/A'}</td>
+                <td class="text-center">${cve.epss_score !== null && cve.epss_score !== undefined ? (cve.epss_score * 100).toFixed(1) + '%' : 'N/A'}</td>
                 <td class="text-center">${cve.risk_score !== null ? cve.risk_score.toFixed(2) : 'N/A'}</td>
                 <td>${escapeHtml(cve.vendor || 'N/A')}</td>
                 <td>${formatDate(cve.published_date)}</td>
+                <td>${formatDate(cve.modified_date)}</td>
             `;
             tbody.appendChild(row);
         });
@@ -501,6 +521,7 @@ document.addEventListener('DOMContentLoaded', function () {
         state.vendor = document.getElementById('filter-vendor').value;
         state.product = document.getElementById('filter-product').value;
         state.min_cvss = document.getElementById('filter-min-cvss').value;
+        state.max_cvss = document.getElementById('filter-max-cvss').value;
         state.min_epss = document.getElementById('filter-min-epss').value;
         state.kev_only = document.getElementById('filter-kev').checked;
         state.source_site = document.getElementById('filter-source').value;
@@ -535,7 +556,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (pageId === 'tab-dashboard' && severityChart) severityChart.resize();
         if (pageId === 'tab-analytics') {
-            [trendChart, kevSplitChart, vendorBarChart, productBarChart].forEach(c => c && c.resize());
+            [trendChart, kevSplitChart, vendorBarChart, productBarChart, articlesTrendChart, sourceEffectivenessChart].forEach(c => c && c.resize());
         }
     }
 
@@ -567,6 +588,7 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('filter-product').value = filters.product || '';
         document.getElementById('filter-source').value = '';
         document.getElementById('filter-min-cvss').value = '';
+        document.getElementById('filter-max-cvss').value = '';
         document.getElementById('filter-min-epss').value = '';
         document.getElementById('filter-kev').checked = !!filters.kevOnly;
 
@@ -605,6 +627,30 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('reset-btn').addEventListener('click', () => {
         document.getElementById('filter-form').reset();
         handleFilterChange();
+    });
+
+    document.getElementById('cve-export-btn').addEventListener('click', () => {
+        const params = cveFilterParams({ page: 1, page_size: 200 });
+        fetch(`${API_BASE}/cves?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                exportToCsv('cve-explorer.csv', data.items, [
+                    { key: 'cve_id', label: 'CVE ID' },
+                    { key: 'risk_level', label: 'Severity' },
+                    { label: 'CVSS', value: (r) => r.cvss_score },
+                    { label: 'EPSS', value: (r) => r.epss_score },
+                    { key: 'risk_score', label: 'Risk Score' },
+                    { key: 'vendor', label: 'Vendor' },
+                    { key: 'product', label: 'Product' },
+                    { key: 'published_date', label: 'Published' },
+                    { key: 'modified_date', label: 'Updated' },
+                    { key: 'kev_listed', label: 'KEV' },
+                ]);
+                if (data.total > data.items.length) {
+                    showToast(`Note: only the first ${data.items.length} of ${data.total} matching CVEs were exported.`, 'info');
+                }
+            })
+            .catch(error => console.error('Error exporting CVEs:', error));
     });
 
     document.getElementById('pagination').addEventListener('click', (e) => {
@@ -849,12 +895,183 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    function severityBarsHtml(counts, total) {
+        const order = [['Critical', '--critical'], ['High', '--high'], ['Medium', '--medium'], ['Low', '--low']];
+        return order.map(([level, colorVar]) => {
+            const n = counts[level] || 0;
+            const barPct = total ? Math.round((n / total) * 100) : 0;
+            return `
+                <div class="severity-bar-row">
+                    <span class="label">${level}</span>
+                    <span class="track"><span class="fill" style="width:${barPct}%; background: var(${colorVar});"></span></span>
+                    <span class="count">${n}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function recentCveRowsHtml(items) {
+        return items.map(item => `
+            <div class="recent-cve-row" data-cve-id="${escapeHtml(item.cve_id)}">
+                <div>
+                    <span class="cve-id-link">${escapeHtml(item.cve_id)}</span>
+                    ${item.kev_listed ? '<span class="badge bg-danger ms-1">KEV</span>' : ''}
+                    <div class="recent-cve-meta">${escapeHtml(item.vendor || 'Unknown vendor')}${item.product ? ' / ' + escapeHtml(item.product) : ''}</div>
+                </div>
+                <div class="text-end">
+                    <span class="badge badge-${riskLevel(item.risk_level).toUpperCase()}">${escapeHtml(item.risk_level || 'N/A')}</span>
+                    <div class="recent-cve-meta">${formatDate(item.published_date)}</div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function recentAdvisoriesHtml(items) {
+        if (!items || items.length === 0) return '<p class="text-muted small mb-0">No CVEs found.</p>';
+        return `<div class="recent-cve-list">${recentCveRowsHtml(items)}</div>`;
+    }
+
+    function wireRecentCveRows(container) {
+        container.querySelectorAll('.recent-cve-row').forEach(row => {
+            row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
+        });
+    }
+
+    // --- Vendor detail modal ---
+    function showVendorDetail(vendorName) {
+        document.getElementById('vendorDetailModalLabel').textContent = vendorName;
+        const body = document.getElementById('vendor-detail-body');
+        body.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-accent" role="status"></div></div>';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('vendorDetailModal')).show();
+
+        const params = new URLSearchParams({ vendor: vendorName, page_size: 200, sort_by: 'published', sort_dir: 'desc' });
+        fetch(`${API_BASE}/cves?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                const items = data.items || [];
+                const products = [...new Set(items.map(c => c.product).filter(Boolean))];
+                const severityCounts = {};
+                let kevCount = 0;
+                items.forEach(c => {
+                    const level = c.risk_level || 'Low';
+                    severityCounts[level] = (severityCounts[level] || 0) + 1;
+                    if (c.kev_listed) kevCount++;
+                });
+
+                body.innerHTML = `
+                    <div class="detail-section">
+                        <h6>Overview</h6>
+                        <dl class="detail-kv">
+                            <dt>Total CVEs</dt><dd>${data.total}</dd>
+                            <dt>KEV Listed</dt><dd>${kevCount}</dd>
+                            <dt>Products</dt><dd>${products.length}</dd>
+                        </dl>
+                    </div>
+                    <div class="detail-section">
+                        <h6>Severity Distribution</h6>
+                        ${severityBarsHtml(severityCounts, data.total)}
+                    </div>
+                    <div class="detail-section">
+                        <h6>Associated Products</h6>
+                        <div class="entity-card-metrics">
+                            ${products.length ? products.map(p => `<button type="button" class="metric-chip chip-accent product-chip-link" data-product="${escapeHtml(p)}" style="border:none; cursor:pointer;">${escapeHtml(p)}</button>`).join('') : '<span class="text-muted small">No products identified.</span>'}
+                        </div>
+                    </div>
+                    <div class="detail-section">
+                        <h6>Recent Advisories</h6>
+                        ${recentAdvisoriesHtml(items.slice(0, 8))}
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="vendor-detail-view-all">
+                        <i class="bi bi-funnel"></i> View all ${data.total} CVEs in Explorer
+                    </button>
+                `;
+                wireRecentCveRows(body);
+                document.getElementById('vendor-detail-view-all').addEventListener('click', () => {
+                    bootstrap.Modal.getInstance(document.getElementById('vendorDetailModal'))?.hide();
+                    goToOverviewFiltered({ vendor: vendorName });
+                });
+                body.querySelectorAll('.product-chip-link').forEach(chip => {
+                    chip.addEventListener('click', () => showProductDetail(vendorName, chip.dataset.product));
+                });
+            })
+            .catch(error => {
+                console.error('Error loading vendor detail:', error);
+                body.innerHTML = '<p class="text-danger small mb-0">Failed to load vendor details.</p>';
+            });
+    }
+
+    // --- Product detail modal ---
+    function showProductDetail(vendorName, productName) {
+        document.getElementById('productDetailModalLabel').textContent = productName;
+        const body = document.getElementById('product-detail-body');
+        body.innerHTML = '<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-accent" role="status"></div></div>';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('productDetailModal')).show();
+
+        const params = new URLSearchParams({ vendor: vendorName || '', product: productName, page_size: 200, sort_by: 'published', sort_dir: 'desc' });
+        fetch(`${API_BASE}/cves?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                const items = data.items || [];
+                const kevCount = items.filter(c => c.kev_listed).length;
+
+                body.innerHTML = `
+                    <div class="detail-section">
+                        <h6>Overview</h6>
+                        <dl class="detail-kv">
+                            <dt>Vendor</dt><dd>${escapeHtml(vendorName || 'Unknown')}</dd>
+                            <dt>Total CVEs</dt><dd>${data.total}</dd>
+                            <dt>KEV Listed</dt><dd>${kevCount}</dd>
+                        </dl>
+                    </div>
+                    <div class="detail-section">
+                        <h6>Affected &amp; Fixed Versions</h6>
+                        <div class="table-responsive">
+                            <table class="table app-table">
+                                <thead><tr><th>CVE ID</th><th class="text-center">Severity</th><th>Affected Versions</th><th>Fixed Versions</th></tr></thead>
+                                <tbody>
+                                    ${items.slice(0, 15).map(c => `
+                                        <tr class="version-row" data-cve-id="${escapeHtml(c.cve_id)}" style="cursor:pointer;">
+                                            <td><span class="cve-id-link">${escapeHtml(c.cve_id)}</span></td>
+                                            <td class="text-center"><span class="badge badge-${riskLevel(c.risk_level).toUpperCase()}">${escapeHtml(c.risk_level || 'N/A')}</span></td>
+                                            <td class="small">${escapeHtml(c.affected_versions_display || 'Not Available')}</td>
+                                            <td class="small">${escapeHtml(c.fixed_versions_display || 'Not published')}</td>
+                                        </tr>
+                                    `).join('') || '<tr><td colspan="4" class="text-center text-muted">No CVEs found.</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="product-detail-view-all">
+                        <i class="bi bi-funnel"></i> View all ${data.total} CVEs in Explorer
+                    </button>
+                `;
+                body.querySelectorAll('.version-row').forEach(row => {
+                    row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
+                });
+                document.getElementById('product-detail-view-all').addEventListener('click', () => {
+                    bootstrap.Modal.getInstance(document.getElementById('productDetailModal'))?.hide();
+                    goToOverviewFiltered({ vendor: vendorName, product: productName });
+                });
+            })
+            .catch(error => {
+                console.error('Error loading product detail:', error);
+                body.innerHTML = '<p class="text-danger small mb-0">Failed to load product details.</p>';
+            });
+    }
+
     // --- KEV page ---
+    let lastKevResults = [];
+
     function fetchKevCves() {
         const params = new URLSearchParams({ kev_only: 'true', sort_by: 'risk_score', sort_dir: 'desc', page_size: 100 });
         fetch(`${API_BASE}/cves?${params.toString()}`)
             .then(response => response.json())
-            .then(data => renderKevTable(data.items))
+            .then(data => {
+                lastKevResults = data.items || [];
+                renderKevTable(lastKevResults);
+                const el = document.getElementById('kev-summary-line');
+                if (el) el.textContent = `${lastKevResults.length} actively exploited CVE${lastKevResults.length === 1 ? '' : 's'} confirmed by CISA.`;
+            })
             .catch(error => console.error('Error fetching KEV CVEs:', error));
     }
 
@@ -878,10 +1095,26 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td>${formatDate(cve.kev_date_added)}</td>
                 <td>${formatDate(cve.kev_due_date)}</td>
                 <td>${formatDate(cve.published_date)}</td>
+                <td class="text-muted small">${escapeHtml(cve.risk_recommendation || 'N/A')}</td>
             `;
             tbody.appendChild(row);
         });
     }
+
+    document.getElementById('kev-export-btn').addEventListener('click', () => {
+        exportToCsv('kev-catalog.csv', lastKevResults, [
+            { key: 'cve_id', label: 'CVE ID' },
+            { key: 'vendor', label: 'Vendor' },
+            { key: 'product', label: 'Product' },
+            { key: 'risk_level', label: 'Severity' },
+            { label: 'CVSS', value: (r) => r.cvss_score },
+            { label: 'EPSS', value: (r) => r.epss_score },
+            { key: 'kev_date_added', label: 'KEV Added' },
+            { key: 'kev_due_date', label: 'Remediation Due' },
+            { key: 'published_date', label: 'Published' },
+            { key: 'risk_recommendation', label: 'Mitigation Guidance' },
+        ]);
+    });
 
     document.getElementById('kev-table-body').addEventListener('click', (e) => {
         const row = e.target.closest('tr');
@@ -896,22 +1129,8 @@ document.addEventListener('DOMContentLoaded', function () {
             container.innerHTML = '<div class="text-center text-muted small py-4">No CVEs published yet.</div>';
             return;
         }
-        container.innerHTML = items.map(item => `
-            <div class="recent-cve-row" data-cve-id="${escapeHtml(item.cve_id)}">
-                <div>
-                    <span class="cve-id-link">${escapeHtml(item.cve_id)}</span>
-                    ${item.kev_listed ? '<span class="badge bg-danger ms-1">KEV</span>' : ''}
-                    <div class="recent-cve-meta">${escapeHtml(item.vendor || 'Unknown vendor')}${item.product ? ' / ' + escapeHtml(item.product) : ''}</div>
-                </div>
-                <div class="text-end">
-                    <span class="badge badge-${riskLevel(item.risk_level).toUpperCase()}">${escapeHtml(item.risk_level || 'N/A')}</span>
-                    <div class="recent-cve-meta">${formatDate(item.published_date)}</div>
-                </div>
-            </div>
-        `).join('');
-        container.querySelectorAll('.recent-cve-row').forEach(row => {
-            row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
-        });
+        container.innerHTML = recentCveRowsHtml(items);
+        wireRecentCveRows(container);
     }
 
     // --- Analytics page ---
@@ -920,6 +1139,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(response => response.json())
             .then(data => {
                 renderTrendChart(data.monthly_trend || []);
+                renderArticlesTrendChart(data.articles_trend || []);
                 renderKevSplitChart(data.kev_vs_non_kev || { kev: 0, non_kev: 0 });
                 renderVendorBarChart(data.vendor_bar || []);
                 renderProductBarChart(data.product_bar || []);
@@ -927,6 +1147,59 @@ document.addEventListener('DOMContentLoaded', function () {
                 renderRecentCves('dashboard-recent-cves', (data.recent_cves || []).slice(0, 5));
             })
             .catch(error => console.error('Error fetching analytics:', error));
+        renderSourceEffectivenessChart();
+    }
+
+    function renderArticlesTrendChart(articlesTrend) {
+        const ctx = document.getElementById('articlesTrendChart').getContext('2d');
+        const mutedText = cssVar('--text-muted');
+        const gridColor = cssVar('--chart-grid');
+        const low = cssVar('--low');
+
+        if (articlesTrendChart) articlesTrendChart.destroy();
+        articlesTrendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: articlesTrend.map(m => m.month),
+                datasets: [{
+                    data: articlesTrend.map(m => m.count),
+                    borderColor: low,
+                    backgroundColor: hexToRgba(low, 0.15),
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointBackgroundColor: low,
+                    borderWidth: 2,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: mutedText }, grid: { display: false } },
+                    y: { beginAtZero: true, ticks: { precision: 0, color: mutedText }, grid: { color: gridColor } },
+                },
+            },
+        });
+    }
+
+    function renderSourceEffectivenessChart() {
+        const canvas = document.getElementById('sourceEffectivenessChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const rows = [...sourcesState.all].sort((a, b) => (b.cves_found || 0) - (a.cves_found || 0)).slice(0, 8);
+        const accent = cssVar('--accent');
+
+        if (sourceEffectivenessChart) sourceEffectivenessChart.destroy();
+        sourceEffectivenessChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: rows.map(r => r.name || r.url),
+                datasets: [{ data: rows.map(r => r.cves_found || 0), backgroundColor: accent, borderRadius: 4, borderSkipped: false, maxBarThickness: 20 }],
+            },
+            options: barChartOptions(cssVar('--text-muted'), cssVar('--chart-grid')),
+        });
     }
 
     function renderTrendChart(monthlyTrend) {
@@ -1065,6 +1338,33 @@ document.addEventListener('DOMContentLoaded', function () {
         element.className = `alert alert-${type}`;
         element.textContent = message;
         element.style.display = 'block';
+    }
+
+    // --- CSV export (client-side; columns = [{key, label} | {value: fn, label}]) ---
+    function exportToCsv(filename, rows, columns) {
+        if (!rows || rows.length === 0) {
+            showToast('Nothing to export.', 'info');
+            return;
+        }
+        const escapeCsv = (value) => {
+            const str = value === null || value === undefined ? '' : String(value);
+            return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+        };
+        const cell = (row, col) => (typeof col.value === 'function' ? col.value(row) : row[col.key]);
+        const lines = [
+            columns.map(c => escapeCsv(c.label)).join(','),
+            ...rows.map(row => columns.map(c => escapeCsv(cell(row, c))).join(',')),
+        ];
+        const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to ${filename}.`, 'success');
     }
 
     // --- Toast notifications ---
@@ -1409,11 +1709,98 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
+    document.getElementById('sources-export-btn').addEventListener('click', () => {
+        exportToCsv('security-sources.csv', lastFilteredSources, [
+            { key: 'name', label: 'Name' },
+            { key: 'url', label: 'URL' },
+            { key: 'source_type', label: 'Type' },
+            { key: 'vendor', label: 'Vendor' },
+            { key: 'enabled', label: 'Enabled' },
+            { key: 'status', label: 'Status' },
+            { key: 'last_checked', label: 'Last Scan' },
+            { key: 'last_articles_processed', label: 'Articles' },
+            { key: 'cves_found', label: 'CVEs Found' },
+            { key: 'last_error', label: 'Last Error' },
+        ]);
+    });
+
     document.getElementById('sources-table-body').addEventListener('click', handleSourceAction);
     document.getElementById('sources-card-view').addEventListener('click', handleSourceAction);
 
+    // --- Scan History page ---
+    let lastScanHistory = [];
+
+    function populateScanHistorySourceFilter() {
+        const select = document.getElementById('scan-history-source-filter');
+        const current = select.value;
+        // Rebuild is cheap and keeps the list in sync as sources are added/removed.
+        select.innerHTML = '<option value="">All Sources</option>';
+        sourcesState.all.forEach(source => {
+            const opt = document.createElement('option');
+            opt.value = source.id;
+            opt.textContent = source.name || source.url;
+            select.appendChild(opt);
+        });
+        select.value = current;
+    }
+
+    function fetchScanHistory() {
+        const sourceId = document.getElementById('scan-history-source-filter').value;
+        const params = new URLSearchParams();
+        if (sourceId) params.set('source_id', sourceId);
+
+        fetch(`${API_BASE}/scan-history?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                lastScanHistory = data || [];
+                renderScanHistoryTable(lastScanHistory);
+                const el = document.getElementById('scan-history-summary-line');
+                if (el) el.textContent = `${lastScanHistory.length} scan${lastScanHistory.length === 1 ? '' : 's'} recorded${sourceId ? ' for this source' : ' across every source'}.`;
+            })
+            .catch(error => console.error('Error fetching scan history:', error));
+    }
+
+    function renderScanHistoryTable(history) {
+        const tbody = document.getElementById('scan-history-table-body');
+        const emptyState = document.getElementById('scan-history-empty-state');
+        tbody.innerHTML = '';
+        if (!history || history.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        history.forEach(scan => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${escapeHtml(scan.source_name || 'Deleted source')}</strong></td>
+                <td>${scan.scan_time ? new Date(scan.scan_time).toLocaleString() : 'N/A'}</td>
+                <td class="text-center"><span class="source-status-pill status-${(scan.status || '').toLowerCase()}">${escapeHtml(scan.status || 'Unknown')}</span></td>
+                <td class="text-center">${scan.duration_seconds !== null && scan.duration_seconds !== undefined ? `${scan.duration_seconds.toFixed(2)}s` : 'N/A'}</td>
+                <td class="text-center">${scan.articles_processed ?? 0}</td>
+                <td class="text-center">${scan.cves_found ?? 0}</td>
+                <td>${scan.error_message ? `<span class="truncate-cell text-danger" title="${escapeHtml(scan.error_message)}">${escapeHtml(scan.error_message)}</span>` : '&mdash;'}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
+    document.getElementById('scan-history-source-filter').addEventListener('change', fetchScanHistory);
+
+    document.getElementById('scan-history-export-btn').addEventListener('click', () => {
+        exportToCsv('scan-history.csv', lastScanHistory, [
+            { key: 'source_name', label: 'Source' },
+            { key: 'scan_time', label: 'Scan Time' },
+            { key: 'status', label: 'Status' },
+            { key: 'duration_seconds', label: 'Duration (s)' },
+            { key: 'articles_processed', label: 'Articles' },
+            { key: 'cves_found', label: 'CVEs Found' },
+            { key: 'error_message', label: 'Error' },
+        ]);
+    });
+
     // --- Articles page ---
     const articlesState = { page: 1, pageSize: 25, sortBy: 'fetched_at', sortDir: 'desc', q: '' };
+    let currentArticlesPage = [];
 
     function fetchArticles() {
         const params = new URLSearchParams({
@@ -1426,14 +1813,21 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch(`${API_BASE}/articles?${params.toString()}`)
             .then(response => response.json())
             .then(data => {
-                renderArticlesTable(data.items);
-                renderArticlesCards(data.items);
+                currentArticlesPage = data.items || [];
+                renderArticlesTable(currentArticlesPage);
+                renderArticlesCards(currentArticlesPage);
                 renderGenericPagination('articles-pagination', data.total, data.page, data.page_size, (page) => {
                     articlesState.page = page;
                     fetchArticles();
                 });
+                const el = document.getElementById('articles-summary-line');
+                if (el) el.textContent = `${data.total} article${data.total === 1 ? '' : 's'} collected from your security sources.`;
             })
             .catch(error => console.error('Error fetching articles:', error));
+    }
+
+    function severityBadgeOrDash(level) {
+        return level ? `<span class="badge badge-${level.toUpperCase()}">${escapeHtml(level)}</span>` : '<span class="text-muted">&mdash;</span>';
     }
 
     function renderArticlesTable(articles) {
@@ -1447,13 +1841,15 @@ document.addEventListener('DOMContentLoaded', function () {
         emptyState.classList.add('d-none');
         articles.forEach(article => {
             const row = document.createElement('tr');
+            row.dataset.articleId = article.id;
             const cveCount = (article.cves || []).length;
             row.innerHTML = `
-                <td><a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.title || article.url)}</a></td>
-                <td class="text-muted">${escapeHtml(article.site_name || 'N/A')}</td>
+                <td><a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="article-title-link">${escapeHtml(article.title || article.url)}</a></td>
+                <td class="text-muted">${escapeHtml(article.source_name || article.site_name || 'N/A')}</td>
                 <td>${formatDate(article.published_date)}</td>
                 <td>${formatDate(article.fetched_at)}</td>
                 <td class="text-center">${cveCount > 0 ? `<span class="badge bg-secondary">${cveCount}</span>` : '<span class="text-muted">0</span>'}</td>
+                <td class="text-center">${severityBadgeOrDash(article.highest_severity)}</td>
             `;
             tbody.appendChild(row);
         });
@@ -1465,19 +1861,21 @@ document.addEventListener('DOMContentLoaded', function () {
         articles.forEach(article => {
             const cveCount = (article.cves || []).length;
             const card = document.createElement('div');
-            card.className = 'entity-card';
+            card.className = 'entity-card is-clickable';
+            card.dataset.articleId = article.id;
             card.innerHTML = `
                 <div class="entity-card-head">
-                    <span class="avatar-circle" style="background: ${avatarColor(article.site_name || article.title)};"><i class="bi bi-newspaper"></i></span>
+                    <span class="avatar-circle" style="background: ${avatarColor(article.source_name || article.site_name || article.title)};"><i class="bi bi-newspaper"></i></span>
                     <div>
                         <div class="entity-card-title">
-                            <a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="text-reset text-decoration-none">${escapeHtml(article.title || article.url)}</a>
+                            <a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="text-reset text-decoration-none article-title-link">${escapeHtml(article.title || article.url)}</a>
                         </div>
-                        <div class="entity-card-subtitle">${escapeHtml(article.site_name || 'Unknown source')}</div>
+                        <div class="entity-card-subtitle">${escapeHtml(article.source_name || article.site_name || 'Unknown source')}</div>
                     </div>
                 </div>
                 <div class="entity-card-metrics">
                     ${cveCount > 0 ? `<span class="metric-chip chip-accent"><i class="bi bi-bug-fill"></i> ${cveCount} CVE${cveCount === 1 ? '' : 's'}</span>` : '<span class="metric-chip">No CVEs found</span>'}
+                    ${article.highest_severity ? `<span class="badge badge-${article.highest_severity.toUpperCase()}">${escapeHtml(article.highest_severity)}</span>` : ''}
                 </div>
                 <div class="article-card-foot">
                     <span>Published ${formatDate(article.published_date)}</span>
@@ -1487,6 +1885,86 @@ document.addEventListener('DOMContentLoaded', function () {
             container.appendChild(card);
         });
     }
+
+    function openArticleDetailFromEvent(e, containerSelector) {
+        // The title is a real outbound link; let it navigate on its own
+        // rather than also opening the detail modal underneath it.
+        if (e.target.closest('.article-title-link')) return;
+        const el = e.target.closest(containerSelector);
+        if (!el || !el.dataset.articleId) return;
+        const article = currentArticlesPage.find(a => String(a.id) === el.dataset.articleId);
+        if (article) showArticleDetail(article);
+    }
+
+    document.getElementById('articles-table-body').addEventListener('click', (e) => openArticleDetailFromEvent(e, 'tr'));
+    document.getElementById('articles-card-view').addEventListener('click', (e) => openArticleDetailFromEvent(e, '.entity-card'));
+
+    function showArticleDetail(article) {
+        document.getElementById('articleDetailModalLabel').textContent = article.title || article.url;
+        const body = document.getElementById('article-detail-body');
+        const cveIds = article.cves || [];
+        body.innerHTML = `
+            <div class="detail-section">
+                <p class="text-muted small mb-2">
+                    <i class="bi bi-globe"></i> ${escapeHtml(article.source_name || article.site_name || 'Unknown source')}
+                    &nbsp;&middot;&nbsp; Published ${formatDate(article.published_date)}
+                    &nbsp;&middot;&nbsp; Scanned ${formatDate(article.fetched_at)}
+                </p>
+                <a href="${escapeHtml(article.url)}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-box-arrow-up-right"></i> Open Original Article
+                </a>
+            </div>
+            <div class="detail-section">
+                <h6>Extracted CVEs (${cveIds.length})</h6>
+                <div id="article-cve-list" class="related-cve-list">
+                    ${cveIds.length ? '<span class="text-muted small">Loading&hellip;</span>' : '<span class="text-muted small">No CVE IDs were detected in this article.</span>'}
+                </div>
+            </div>
+        `;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('articleDetailModal')).show();
+
+        if (cveIds.length) {
+            Promise.all(cveIds.map(id => fetch(`${API_BASE}/cve/${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : null))))
+                .then(results => {
+                    const container = document.getElementById('article-cve-list');
+                    if (!container) return;
+                    const valid = results.filter(Boolean);
+                    container.innerHTML = valid.length
+                        ? valid.map(cve => `
+                            <a href="#" class="related-cve-link" data-cve-id="${escapeHtml(cve.cve_id)}">
+                                <span class="cve-id-link">${escapeHtml(cve.cve_id)}</span>
+                                <span>
+                                    ${escapeHtml(cve.vendor || '')} ${escapeHtml(cve.product || '')}
+                                    <span class="badge badge-${riskLevel(cve.risk_level).toUpperCase()} ms-1">${escapeHtml(cve.risk_level || 'N/A')}</span>
+                                </span>
+                            </a>
+                        `).join('')
+                        : '<span class="text-muted small">CVE details unavailable.</span>';
+                })
+                .catch(error => console.error('Error loading article CVE details:', error));
+        }
+    }
+
+    document.getElementById('article-detail-body').addEventListener('click', (e) => {
+        const link = e.target.closest('.related-cve-link');
+        if (link) {
+            e.preventDefault();
+            bootstrap.Modal.getInstance(document.getElementById('articleDetailModal'))?.hide();
+            fetchAndShowCveDetails(link.dataset.cveId);
+        }
+    });
+
+    document.getElementById('articles-export-btn').addEventListener('click', () => {
+        exportToCsv('security-intelligence.csv', currentArticlesPage, [
+            { key: 'title', label: 'Title' },
+            { label: 'Source', value: (a) => a.source_name || a.site_name },
+            { key: 'published_date', label: 'Published' },
+            { key: 'fetched_at', label: 'Fetched' },
+            { label: 'CVE Count', value: (a) => (a.cves || []).length },
+            { key: 'highest_severity', label: 'Highest Severity' },
+            { key: 'url', label: 'URL' },
+        ]);
+    });
 
     function renderGenericPagination(elementId, total, page, pageSize, onPageClick) {
         const pagination = document.getElementById(elementId);
@@ -1568,6 +2046,11 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(data => {
                 vendorsState.all = data.items || [];
                 renderVendorsTable();
+                const el = document.getElementById('vendors-summary-line');
+                if (el) {
+                    const totalCves = vendorsState.all.reduce((sum, v) => sum + v.cve_count, 0);
+                    el.textContent = `${vendorsState.all.length} vendor${vendorsState.all.length === 1 ? '' : 's'} across ${totalCves} tracked CVEs.`;
+                }
             })
             .catch(error => console.error('Error fetching vendors:', error));
     }
@@ -1578,6 +2061,11 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(data => {
                 productsState.all = data.items || [];
                 renderProductsTable();
+                const el = document.getElementById('products-summary-line');
+                if (el) {
+                    const totalCves = productsState.all.reduce((sum, p) => sum + p.cve_count, 0);
+                    el.textContent = `${productsState.all.length} product${productsState.all.length === 1 ? '' : 's'} across ${totalCves} tracked CVEs.`;
+                }
             })
             .catch(error => console.error('Error fetching products:', error));
     }
@@ -1595,6 +2083,8 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    let lastFilteredVendors = [];
+
     function renderVendorsTable() {
         const tbody = document.getElementById('vendors-table-body');
         const cardContainer = document.getElementById('vendors-card-view');
@@ -1605,6 +2095,7 @@ document.addEventListener('DOMContentLoaded', function () {
             rows = rows.filter(v => v.vendor.toLowerCase().includes(q));
         }
         rows = sortRows(rows, vendorsState.sortBy, vendorsState.sortDir);
+        lastFilteredVendors = rows;
 
         tbody.innerHTML = '';
         cardContainer.innerHTML = '';
@@ -1628,7 +2119,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td class="text-center">${v.critical_count}</td>
                 <td class="text-center">${v.high_count}</td>
             `;
-            row.addEventListener('click', () => goToOverviewFiltered({ vendor: v.vendor }));
+            row.addEventListener('click', () => showVendorDetail(v.vendor));
             tbody.appendChild(row);
 
             const card = document.createElement('div');
@@ -1648,10 +2139,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     ${v.high_count > 0 ? `<span class="metric-chip chip-high">${v.high_count} High</span>` : ''}
                 </div>
             `;
-            card.addEventListener('click', () => goToOverviewFiltered({ vendor: v.vendor }));
+            card.addEventListener('click', () => showVendorDetail(v.vendor));
             cardContainer.appendChild(card);
         });
     }
+
+    let lastFilteredProducts = [];
 
     function renderProductsTable() {
         const tbody = document.getElementById('products-table-body');
@@ -1663,6 +2156,7 @@ document.addEventListener('DOMContentLoaded', function () {
             rows = rows.filter(p => p.product.toLowerCase().includes(q) || (p.vendor || '').toLowerCase().includes(q));
         }
         rows = sortRows(rows, productsState.sortBy, productsState.sortDir);
+        lastFilteredProducts = rows;
 
         tbody.innerHTML = '';
         cardContainer.innerHTML = '';
@@ -1686,7 +2180,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <td class="text-center">${p.critical_count}</td>
                 <td class="text-center">${p.high_count}</td>
             `;
-            row.addEventListener('click', () => goToOverviewFiltered({ vendor: p.vendor, product: p.product }));
+            row.addEventListener('click', () => showProductDetail(p.vendor, p.product));
             tbody.appendChild(row);
 
             const card = document.createElement('div');
@@ -1706,7 +2200,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     ${p.high_count > 0 ? `<span class="metric-chip chip-high">${p.high_count} High</span>` : ''}
                 </div>
             `;
-            card.addEventListener('click', () => goToOverviewFiltered({ vendor: p.vendor, product: p.product }));
+            card.addEventListener('click', () => showProductDetail(p.vendor, p.product));
             cardContainer.appendChild(card);
         });
     }
@@ -1730,6 +2224,28 @@ document.addEventListener('DOMContentLoaded', function () {
             productsState.q = document.getElementById('products-search').value.trim();
             renderProductsTable();
         }, 300);
+    });
+
+    document.getElementById('vendors-export-btn').addEventListener('click', () => {
+        exportToCsv('vendors.csv', lastFilteredVendors, [
+            { key: 'vendor', label: 'Vendor' },
+            { key: 'product_count', label: 'Products' },
+            { key: 'cve_count', label: 'CVEs' },
+            { key: 'kev_count', label: 'KEV' },
+            { key: 'critical_count', label: 'Critical' },
+            { key: 'high_count', label: 'High' },
+        ]);
+    });
+
+    document.getElementById('products-export-btn').addEventListener('click', () => {
+        exportToCsv('products.csv', lastFilteredProducts, [
+            { key: 'product', label: 'Product' },
+            { key: 'vendor', label: 'Vendor' },
+            { key: 'cve_count', label: 'CVEs' },
+            { key: 'kev_count', label: 'KEV' },
+            { key: 'critical_count', label: 'Critical' },
+            { key: 'high_count', label: 'High' },
+        ]);
     });
 
     // --- Vulnerability checker ---
@@ -1899,6 +2415,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         fetchProducts();
                         fetchKevCves();
                         fetchAnalytics();
+                        fetchScanHistory();
                     }
                 }
                 wasRunning = data.running;
@@ -1953,6 +2470,7 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchSources();
     fetchKevCves();
     fetchAnalytics();
+    fetchScanHistory();
     fetchSettings();
     setDynamicFooter();
     pollPipelineStatus(); // reflect status immediately (e.g. a run already in progress)

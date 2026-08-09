@@ -17,6 +17,7 @@ class Article:
     content: str = ""
     fetched_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     cves: list[str] = field(default_factory=list)
+    source_id: int | None = None
 
 
 @dataclass

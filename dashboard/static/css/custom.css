@@ -737,6 +737,26 @@ th.sort-asc .sort-icon, th.sort-desc .sort-icon { color: var(--accent); opacity:
 tr.source-row-disabled { opacity: 0.55; }
 .entity-card.source-card-disabled { opacity: 0.6; }
 
+.truncate-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+  font-size: 0.8rem;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Detail-modal severity breakdown (Vendor / Product)                      */
+/* ---------------------------------------------------------------------- */
+
+.severity-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 0.82rem; }
+.severity-bar-row .label { width: 70px; color: var(--text-muted); flex-shrink: 0; }
+.severity-bar-row .track { flex: 1; height: 8px; border-radius: 999px; background: var(--surface-alt); overflow: hidden; }
+.severity-bar-row .fill { height: 100%; border-radius: 999px; }
+.severity-bar-row .count { width: 28px; text-align: right; color: var(--text); font-weight: 600; flex-shrink: 0; }
+
 /* ---------------------------------------------------------------------- */
 /* Settings page                                                           */
 /* ---------------------------------------------------------------------- */
