@@ -318,7 +318,11 @@ body {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface-alt);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
 }
+.user-chip:hover { border-color: var(--accent); }
 .user-chip .avatar-circle { width: 26px; height: 26px; font-size: 0.68rem; }
 .user-chip-name { font-size: 0.8rem; font-weight: 600; color: var(--text); }
 

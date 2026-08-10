@@ -7,6 +7,7 @@ can be overridden via `config.yaml` in the project root.
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
+_SECRET_KEY_PATH = BASE_DIR / "cache" / ".secret_key"
+
+
+def _load_or_create_secret_key() -> str:
+    """Session-signing key for the dashboard's login cookies. Prefers an
+    explicit SECRET_KEY env var; otherwise generates one on first run and
+    persists it locally so sessions survive restarts. Never committed."""
+    env_key = os.getenv("SECRET_KEY")
+    if env_key:
+        return env_key
+    if _SECRET_KEY_PATH.exists():
+        return _SECRET_KEY_PATH.read_text(encoding="utf-8").strip()
+    _SECRET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    new_key = secrets.token_hex(32)
+    _SECRET_KEY_PATH.write_text(new_key, encoding="utf-8")
+    return new_key
 
 
 def _load_yaml_overrides() -> dict:
@@ -50,6 +67,9 @@ class Config:
     # --- API keys (secrets, env-only) ---
     nvd_api_key: str | None = field(default_factory=lambda: os.getenv("NVD_API_KEY"))
     github_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_TOKEN"))
+
+    # --- Dashboard session signing (secret, env-only or auto-generated) ---
+    secret_key: str = field(default_factory=_load_or_create_secret_key)
 
     # --- Network behavior ---
     try:

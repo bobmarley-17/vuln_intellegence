@@ -688,6 +688,31 @@ document.addEventListener('DOMContentLoaded', function () {
         }, 300);
     });
 
+    document.getElementById('cve-lookup-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('cve-lookup-input');
+        const cveId = input.value.trim().toUpperCase();
+        if (!/^CVE-\d{4}-\d{4,7}$/.test(cveId)) {
+            showToast('Enter a valid CVE ID, e.g. CVE-2021-44228.', 'danger');
+            return;
+        }
+        const btn = document.getElementById('cve-lookup-btn');
+        btn.disabled = true;
+        const original = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Looking up...';
+        fetchAndShowCveDetails(cveId, { openModal: true }).then((found) => {
+            if (found) {
+                input.value = '';
+                fetchStats();
+                fetchCVEs();
+                fetchFilters();
+            }
+        }).finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        });
+    });
+
     document.getElementById('cve-table-body').addEventListener('click', (e) => {
         const row = e.target.closest('tr');
         if (row && row.dataset.cveId) {
@@ -696,17 +721,26 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    function fetchAndShowCveDetails(cveId) {
-        fetch(`${API_BASE}/cve/${encodeURIComponent(cveId)}`)
-            .then(response => {
-                if (!response.ok) throw new Error(`CVE not found: ${cveId}`);
-                return response.json();
+    function fetchAndShowCveDetails(cveId, options = {}) {
+        return fetch(`${API_BASE}/cve/${encodeURIComponent(cveId)}`)
+            .then(response => response.json().then(body => ({ status: response.status, body })))
+            .then(({ status, body }) => {
+                if (status !== 200) {
+                    showToast(body.error || `${cveId} was not found.`, 'danger');
+                    return false;
+                }
+                renderCveModal(body);
+                loadRelatedCves(body);
+                if (options.openModal) {
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('cveDetailModal')).show();
+                }
+                return true;
             })
-            .then(cve => {
-                renderCveModal(cve);
-                loadRelatedCves(cve);
-            })
-            .catch(error => console.error('Could not find details for', cveId, error));
+            .catch(error => {
+                console.error('Could not find details for', cveId, error);
+                showToast('A network error occurred while loading that CVE.', 'danger');
+                return false;
+            });
     }
 
     function humanizeEnum(value) {
@@ -927,7 +961,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function wireRecentCveRows(container) {
         container.querySelectorAll('.recent-cve-row').forEach(row => {
-            row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
+            row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId, { openModal: true }));
         });
     }
 
@@ -1040,7 +1074,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     </button>
                 `;
                 body.querySelectorAll('.version-row').forEach(row => {
-                    row.addEventListener('click', () => fetchAndShowCveDetails(row.dataset.cveId));
+                    row.addEventListener('click', () => {
+                        bootstrap.Modal.getInstance(document.getElementById('productDetailModal'))?.hide();
+                        fetchAndShowCveDetails(row.dataset.cveId, { openModal: true });
+                    });
                 });
                 document.getElementById('product-detail-view-all').addEventListener('click', () => {
                     bootstrap.Modal.getInstance(document.getElementById('productDetailModal'))?.hide();
@@ -1112,7 +1149,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('kev-table-body').addEventListener('click', (e) => {
         const row = e.target.closest('tr');
-        if (row && row.dataset.cveId) fetchAndShowCveDetails(row.dataset.cveId);
+        if (row && row.dataset.cveId) fetchAndShowCveDetails(row.dataset.cveId, { openModal: true });
     });
 
     // --- Recently-published mini list (shared by Dashboard and Analytics) ---
@@ -1944,7 +1981,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (link) {
             e.preventDefault();
             bootstrap.Modal.getInstance(document.getElementById('articleDetailModal'))?.hide();
-            fetchAndShowCveDetails(link.dataset.cveId);
+            fetchAndShowCveDetails(link.dataset.cveId, { openModal: true });
         }
     });
 

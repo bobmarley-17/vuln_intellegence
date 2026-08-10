@@ -10,11 +10,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
 
 from config import Config
 from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
+from modules.extractor import CVE_PATTERN
 from modules.models import AffectedProduct, EnrichedCVE
 from modules.normalizer import product_version_affected
 from modules.pipeline import Pipeline
@@ -24,6 +33,19 @@ logger = logging.getLogger("vuln_intel.dashboard")
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+class AppUser(UserMixin):
+    """Flask-Login's view of a users-table row."""
+
+    def __init__(self, row: dict):
+        self.id = str(row["id"])
+        self.username = row["username"]
+        self._active = bool(row["is_active"])
+
+    @property
+    def is_active(self) -> bool:  # noqa: D102 -- overrides UserMixin's default True
+        return self._active
 
 
 class PipelineRunner:
@@ -177,6 +199,62 @@ def create_app(config: Config, debug: bool = False) -> Flask:
     # requests, or it ends up running twice.
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         scheduler.start()
+
+    app.secret_key = config.secret_key
+
+    login_manager = LoginManager()
+    login_manager.login_view = "login"
+    login_manager.init_app(app)
+
+    @login_manager.user_loader
+    def load_user(user_id: str):
+        row = cache.get_user_by_id(int(user_id))
+        if row is None or not row["is_active"]:
+            return None
+        return AppUser(row)
+
+    @app.before_request
+    def require_login():
+        # Login page, its POST handler, and static assets stay reachable
+        # without a session; everything else -- pages and /api/* alike --
+        # needs an authenticated user.
+        if request.endpoint in ("login", "static") or request.path == "/login":
+            return None
+        if not current_user.is_authenticated:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("login", next=request.path))
+        return None
+
+    def _safe_next_url(candidate: str | None) -> str | None:
+        # Only follow same-site relative paths -- never let the `next` param
+        # redirect off this app (open-redirect guard).
+        if candidate and candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        return None
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if current_user.is_authenticated:
+            return redirect(url_for("index"))
+        error = None
+        next_url = _safe_next_url(request.args.get("next") or request.form.get("next"))
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            user_row = cache.verify_user_password(username, password)
+            if user_row:
+                cache.update_last_login(user_row["id"])
+                login_user(AppUser(user_row))
+                return redirect(next_url or url_for("index"))
+            error = "Invalid username or password."
+        return render_template("login.html", error=error, next_url=next_url)
+
+    @app.route("/logout", methods=["POST"])
+    @login_required
+    def logout():
+        logout_user()
+        return redirect(url_for("login"))
 
     @app.route("/")
     def index():
@@ -343,9 +421,17 @@ def create_app(config: Config, debug: bool = False) -> Flask:
 
     @app.route("/api/cve/<cve_id>")
     def api_cve_detail(cve_id):
-        cve = cache.get_cve(cve_id.strip().upper())
+        cve_id = cve_id.strip().upper()
+        cve = cache.get_cve(cve_id)
+        if cve is not None:
+            return jsonify(_serialize(cve))
+
+        if not CVE_PATTERN.fullmatch(cve_id):
+            return jsonify({"error": f"'{cve_id}' is not a valid CVE ID."}), 400
+
+        cve = runner.pipeline.enrich_single_cve(cve_id)
         if cve is None:
-            return jsonify({"error": "CVE not found"}), 404
+            return jsonify({"error": f"{cve_id} was not found in NVD or CVE.org."}), 404
         return jsonify(_serialize(cve))
 
     @app.route("/api/check")

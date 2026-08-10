@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from werkzeug.security import check_password_hash, generate_password_hash
+
 from modules.models import AffectedProduct, Article, EnrichedCVE
 
 logger = logging.getLogger("vuln_intel.cache")
@@ -65,6 +67,15 @@ CREATE TABLE IF NOT EXISTS scan_history (
     FOREIGN KEY (source_id) REFERENCES source_urls(id)
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_article_cves_cve ON article_cves(cve_id);
 CREATE INDEX IF NOT EXISTS idx_source_urls_status ON source_urls(status);
 CREATE INDEX IF NOT EXISTS idx_scan_history_source ON scan_history(source_id);
@@ -99,6 +110,10 @@ _ARTICLE_MIGRATED_COLUMNS = {"source_id": "INTEGER"}
 
 class DuplicateSourceError(Exception):
     """Raised when a source URL already exists in the database."""
+
+
+class DuplicateUserError(Exception):
+    """Raised when a username already exists in the database."""
 
 
 class VulnCache:
@@ -372,6 +387,72 @@ class VulnCache:
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Users (dashboard login)
+    # ------------------------------------------------------------------
+    def create_user(self, username: str, password: str) -> int:
+        """Creates a login account. Returns the new user id, or raises
+        DuplicateUserError if the username is already taken."""
+        now = datetime.now(timezone.utc).isoformat()
+        password_hash = generate_password_hash(password)
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO users (username, password_hash, is_active, created_at) VALUES (?, ?, 1, ?)",
+                    (username, password_hash, now),
+                )
+                return cursor.lastrowid
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateUserError(f"User already exists: {username}") from exc
+
+    def verify_user_password(self, username: str, password: str) -> dict | None:
+        """Returns the user row if the username/password pair is valid and
+        the account is active, else None. Never distinguishes 'no such
+        user' from 'wrong password' in its return value -- that's the
+        caller's job to keep constant-ish (avoid username enumeration)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if row is None:
+            return None
+        if not row["is_active"]:
+            return None
+        if not check_password_hash(row["password_hash"], password):
+            return None
+        return dict(row)
+
+    def get_user_by_id(self, user_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, username, is_active, created_at, last_login_at FROM users ORDER BY username"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_last_login(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), user_id),
+            )
+
+    def set_user_active(self, username: str, active: bool) -> bool:
+        """Returns whether a matching user was found and updated."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET is_active = ? WHERE username = ?",
+                (int(active), username),
+            )
+            return cursor.rowcount > 0
 
     # ------------------------------------------------------------------
     # CVEs

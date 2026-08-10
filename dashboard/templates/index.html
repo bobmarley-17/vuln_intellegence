@@ -95,9 +95,20 @@
                     <button class="btn btn-accent" type="button" data-bs-toggle="modal" data-bs-target="#addSourceModal">
                         <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Source</span>
                     </button>
-                    <div class="user-chip" title="Local single-user instance">
-                        <span class="avatar-circle" style="background: var(--avatar-palette-1);"><i class="bi bi-person-fill"></i></span>
-                        <span class="user-chip-name d-none d-md-inline">Analyst</span>
+                    <div class="dropdown">
+                        <button class="user-chip dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="border: none;">
+                            <span class="avatar-circle" style="background: var(--avatar-palette-1);">{{ current_user.username[0]|upper if current_user.is_authenticated else '?' }}</span>
+                            <span class="user-chip-name d-none d-md-inline">{{ current_user.username if current_user.is_authenticated else 'Guest' }}</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><h6 class="dropdown-header">Signed in as {{ current_user.username if current_user.is_authenticated else 'Guest' }}</h6></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <form method="POST" action="{{ url_for('logout') }}" class="px-2">
+                                    <button type="submit" class="dropdown-item ps-2"><i class="bi bi-box-arrow-right"></i> Logout</button>
+                                </form>
+                            </li>
+                        </ul>
                     </div>
                 </div>
             </header>
@@ -195,6 +206,17 @@
 
                 <!-- CVE Explorer page -->
                 <div class="app-page" id="tab-overview">
+                    <div class="card app-card mb-4">
+                        <div class="card-body">
+                            <label for="cve-lookup-input" class="form-label mb-1">Look up any CVE</label>
+                            <form id="cve-lookup-form" class="input-group">
+                                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                <input type="text" class="form-control" id="cve-lookup-input" placeholder="e.g. CVE-2021-44228" autocomplete="off">
+                                <button class="btn btn-accent" type="submit" id="cve-lookup-btn">Look Up</button>
+                            </form>
+                            <div class="form-text">Not limited to CVEs found by your scanned sources &mdash; looked up live from NVD and CVE.org if it isn't already known.</div>
+                        </div>
+                    </div>
                     <div class="card app-card mb-4">
                         <div class="card-header app-card-header d-flex flex-row align-items-center justify-content-between flex-wrap gap-2">
                             <div>

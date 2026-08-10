@@ -206,6 +206,21 @@ class Pipeline:
                 logger.exception("Unhandled error enriching %s; skipping", cve_id)
         return enriched_count, cached_count
 
+    def enrich_single_cve(self, cve_id: str) -> EnrichedCVE | None:
+        """Look up and enrich one CVE ID on demand, regardless of whether any
+        scanned source ever mentioned it. Used for direct CVE search so users
+        aren't limited to what's already been scanned. Returns None if neither
+        NVD nor CVE.org/MITRE has any record of the ID."""
+        cve_id = cve_id.strip().upper()
+        cached = self.cache.get_cached_cve(cve_id)
+        if cached:
+            return cached
+        enriched = self._enrich_cve(cve_id, source_articles=[])
+        if not enriched.published_date and not enriched.description:
+            return None
+        self.cache.save_cve(enriched)
+        return enriched
+
     def _enrich_cve(self, cve_id: str, source_articles: list[str]) -> EnrichedCVE:
         logger.info("Enriching %s", cve_id)
         cve = EnrichedCVE(cve_id=cve_id, source_articles=sorted(set(source_articles)))
