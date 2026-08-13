@@ -149,13 +149,86 @@ class Action1ClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             cache = VulnCache(str(Path(directory) / "cache.db"))
             result = client.sync_inventory(cache)
-            self.assertEqual(result, {"endpoints": 1, "software_rows": 1})
+            self.assertEqual(result, {"endpoints": 1, "software_rows": 1, "cves_matched": 0})
 
             software = cache.get_action1_software()
             self.assertEqual(len(software), 1)
             self.assertEqual(software[0]["product"], "Widget")
             self.assertEqual(software[0]["hostname"], "host-a")
 
+            status = cache.get_action1_sync_status()
+            self.assertEqual(status["endpoint_count"], 1)
+            self.assertEqual(status["software_count"], 1)
+
+    def test_sync_inventory_rematches_cves_that_predate_the_sync(self):
+        """The bug this guards against: a CVE enriched before Action1 was
+        ever configured/synced only ever gets matched against inventory
+        during its own (re-)enrichment -- which, for most CVEs, may never
+        happen again. A sync must proactively re-check every already-known
+        CVE, not just ones enriched after the fact."""
+        base = "https://app.action1.test/api/3.0"
+        session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"items": [{"id": 1, "name": "host-a"}], "next_page": None}
+                ),
+                ("get", f"{base}/installed-software/org-1/data/1"): FakeResponse(
+                    {"items": [{"fields": {"Name": "Widget", "Vendor": "Acme", "Version": "1.0"}}]}
+                ),
+            }
+        )
+        client = make_client(session)
+        with tempfile.TemporaryDirectory() as directory:
+            cache = VulnCache(str(Path(directory) / "cache.db"))
+            pre_existing_cve = EnrichedCVE(
+                cve_id="CVE-2024-0001",
+                affected_products=[AffectedProduct(vendor="Acme", product="Widget", affected_range="< 2.0")],
+            )
+            cache.save_cve(pre_existing_cve)
+            self.assertEqual(cache.get_all_action1_exposures(), [])  # nothing matched yet
+
+            result = client.sync_inventory(cache)
+            self.assertEqual(result["cves_matched"], 1)
+
+            exposures = cache.get_all_action1_exposures()
+            self.assertEqual(len(exposures), 1)
+            self.assertEqual(exposures[0]["cve_id"], "CVE-2024-0001")
+            self.assertEqual(exposures[0]["version_status"], "vulnerable")
+
+    def test_zero_endpoints_refuses_to_overwrite_existing_inventory(self):
+        """A real org that previously synced 156 endpoints does not
+        suddenly have zero -- a sync that comes back empty must raise
+        instead of silently wiping the last known-good snapshot (this
+        happened for real: a transient empty response destroyed a good
+        156-endpoint / 6448-row inventory with no error surfaced)."""
+        base = "https://app.action1.test/api/3.0"
+        good_session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"items": [{"id": 1, "name": "host-a", "os_name": "Windows"}], "next_page": None}
+                ),
+                ("get", f"{base}/installed-software/org-1/data/1"): FakeResponse(
+                    {"items": [{"fields": {"Name": "Widget", "Vendor": "Acme", "Version": "1.0"}}]}
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cache = VulnCache(str(Path(directory) / "cache.db"))
+            make_client(good_session).sync_inventory(cache)
+            self.assertEqual(cache.get_action1_sync_status()["endpoint_count"], 1)
+
+            empty_session = FakeAction1Session(
+                {
+                    ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                    ("get", f"{base}/endpoints/managed/org-1"): FakeResponse({"items": [], "next_page": None}),
+                }
+            )
+            with self.assertRaises(RuntimeError):
+                make_client(empty_session).sync_inventory(cache)
+
+            # The previous good inventory must still be intact.
             status = cache.get_action1_sync_status()
             self.assertEqual(status["endpoint_count"], 1)
             self.assertEqual(status["software_count"], 1)

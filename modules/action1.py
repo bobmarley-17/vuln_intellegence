@@ -160,9 +160,25 @@ class Action1Client:
 
     def sync_inventory(self, cache: VulnCache) -> dict:
         """Pull the org's managed endpoints and their installed software from
-        Action1 and overwrite the locally cached snapshot that new CVEs are
-        automatically matched against during enrichment."""
+        Action1, overwrite the locally cached snapshot, and immediately
+        re-match every already-known CVE against it. The pipeline only calls
+        match_exposure() while freshly enriching a CVE (see
+        Pipeline._enrich_cve), which by itself would leave every CVE that
+        existed *before* this sync unmatched indefinitely -- most cached
+        CVEs are never touched again unless they resurface in a newly
+        scanned article, so a sync would otherwise silently produce zero
+        exposure rows despite a populated inventory."""
         raw_endpoints = self.get_managed_endpoints()
+        if not raw_endpoints:
+            # A real org with a previously-synced fleet does not suddenly
+            # have zero endpoints -- this is almost certainly a transient
+            # failure (auth hiccup, rate limit, empty page). Refuse to let
+            # it silently wipe the last known-good inventory snapshot.
+            raise RuntimeError(
+                "Action1 returned zero managed endpoints; refusing to overwrite the existing "
+                "inventory snapshot. Retry the sync -- if this keeps happening, check the API "
+                "client's credentials/permissions rather than assuming the org is actually empty."
+            )
         endpoints = [
             {
                 "id": str(ep["id"]),
@@ -188,8 +204,16 @@ class Action1Client:
                 )
 
         cache.replace_action1_inventory(endpoints, software)
-        logger.info("Action1 sync complete: %d endpoints, %d software rows", len(endpoints), len(software))
-        return {"endpoints": len(endpoints), "software_rows": len(software)}
+
+        all_cves = cache.get_all_cves()
+        for cve in all_cves:
+            self.match_exposure(cve, cache)
+
+        logger.info(
+            "Action1 sync complete: %d endpoints, %d software rows, %d CVEs re-matched",
+            len(endpoints), len(software), len(all_cves),
+        )
+        return {"endpoints": len(endpoints), "software_rows": len(software), "cves_matched": len(all_cves)}
 
     # ------------------------------------------------------------------
     # Exposure matching (reads the local cache only -- no Action1 API calls)
