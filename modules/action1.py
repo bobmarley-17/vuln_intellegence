@@ -111,20 +111,18 @@ class Action1Client:
     # Inventory sync
     # ------------------------------------------------------------------
     def get_managed_endpoints(self) -> list[dict]:
-        """All endpoints in the org, following Action1's next_page cursor."""
+        """All endpoints in the org. Action1's `next_page` is a complete URL
+        (already carrying its own query string) to GET as-is for the next
+        page -- not a token to wrap in a new `next_page=` parameter."""
         endpoints: list[dict] = []
-        path = ENDPOINTS_PATH.format(org_id=self.org_id)
+        url: str | None = f"{self.base_url}{ENDPOINTS_PATH.format(org_id=self.org_id)}"
         params: dict | None = {"fields": "*"}
-        next_page: str | None = None
-        while True:
-            url = f"{self.base_url}{path}"
-            request_params = params if next_page is None else {"next_page": next_page}
-            resp = self._request("get", url, params=request_params)
+        while url:
+            resp = self._request("get", url, params=params)
             data = resp.json()
             endpoints.extend(data.get("data") or data.get("items") or [])
-            next_page = data.get("next_page")
-            if not next_page:
-                break
+            url = data.get("next_page")
+            params = None  # next_page already has its own complete query string
         return endpoints
 
     def _fetch_installed_software(self, endpoint_id: str) -> list[dict]:

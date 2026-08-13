@@ -65,6 +65,29 @@ class Action1ClientTests(unittest.TestCase):
         self.assertEqual(client._get_token(), "tok")
         self.assertEqual(len([c for c in session.calls if c[0] == "post"]), 1)
 
+    def test_get_managed_endpoints_follows_next_page_url_as_is(self):
+        """Action1's next_page is a full URL with its own query string --
+        it must be requested directly, not re-wrapped as a `next_page=`
+        parameter on the original endpoint URL (that bug caused a 403 from
+        an ever-growing, doubly-encoded URL against a real tenant)."""
+        base = "https://app.action1.test/api/3.0"
+        page2_url = f"{base}/endpoints/managed/org-1?fields=%2A&from=1&limit=1"
+        session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"data": [{"id": 1, "name": "host-a"}], "next_page": page2_url}
+                ),
+                ("get", page2_url): FakeResponse({"data": [{"id": 2, "name": "host-b"}], "next_page": None}),
+            }
+        )
+        client = make_client(session)
+        endpoints = client.get_managed_endpoints()
+        self.assertEqual([e["name"] for e in endpoints], ["host-a", "host-b"])
+        # The second call must hit page2_url verbatim -- no extra params merged in.
+        second_get = [c for c in session.calls if c[0] == "get"][1]
+        self.assertEqual(second_get[1], page2_url)
+
     def test_sync_inventory_populates_cache(self):
         base = "https://app.action1.test/api/3.0"
         session = FakeAction1Session(
