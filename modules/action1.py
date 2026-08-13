@@ -3,18 +3,23 @@ inventory and matches it against enriched CVEs so the dashboard can show
 which real assets are affected.
 
 Action1 uses OAuth2-style client-credential auth (exchange a client
-id/secret for a bearer JWT) against a REST API under /api/3.0. Only the
-managed-endpoints listing is confirmed from Action1's public docs
-(GET /endpoints/managed/{org_id}); the token exchange path and the
-per-endpoint installed-software path are not publicly documented -- their
-interactive Swagger UI is behind console login. Both are isolated below
-(TOKEN_PATH, _fetch_installed_software) so they're a one-place fix once
-real credentials and console access are available to confirm them.
+id/secret for a bearer JWT) against a REST API under /api/3.0. Endpoint
+listing and installed-software paths are confirmed against a real tenant's
+Swagger reference. Installed-software rows require the API client's role to
+have the `view_installed_software` permission -- without it every call to
+SOFTWARE_PATH returns 403, independent of whether the path is correct.
+
+Both endpoints return Action1's generic paginated "ResultPage" envelope
+(`items`, `next_page`) -- `next_page` is a complete next-page reference
+(observed as an absolute URL in practice; Action1's own docs show a
+root-relative path) to fetch as-is, never a token to re-wrap as a new query
+parameter. `_get_paginated` is the one place that walks it.
 """
 from __future__ import annotations
 
 import logging
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -24,9 +29,9 @@ from modules.normalizer import match_cve_to_product
 
 logger = logging.getLogger("vuln_intel.action1")
 
-TOKEN_PATH = "/oauth2/token"  # unverified, see module docstring
+TOKEN_PATH = "/oauth2/token"  # unverified -- console/Swagger access hasn't confirmed this one yet
 ENDPOINTS_PATH = "/endpoints/managed/{org_id}"
-SOFTWARE_PATH = "/endpoints/{endpoint_id}/software"  # unverified, see module docstring
+SOFTWARE_PATH = "/installed-software/{org_id}/data/{endpoint_id}"
 
 _MIN_REQUEST_INTERVAL_SECONDS = 2.0  # keep comfortably under Action1's ~30 req/min cap
 
@@ -108,31 +113,50 @@ class Action1Client:
         self._last_request_at = time.time()
 
     # ------------------------------------------------------------------
+    # Pagination (shared by every "ResultPage"-shaped endpoint)
+    # ------------------------------------------------------------------
+    def _get_paginated(self, url: str, params: dict | None = None) -> list[dict]:
+        results: list[dict] = []
+        next_url: str | None = url
+        while next_url:
+            resp = self._request("get", next_url, params=params)
+            data = resp.json()
+            results.extend(data.get("items") or data.get("data") or [])
+            next_page = data.get("next_page")
+            next_url = self._resolve_next_page(next_page) if next_page else None
+            params = None  # next_page already carries its own complete query string
+        return results
+
+    def _resolve_next_page(self, next_page: str) -> str:
+        if next_page.startswith("http://") or next_page.startswith("https://"):
+            return next_page
+        origin = urlparse(self.base_url)
+        return f"{origin.scheme}://{origin.netloc}{next_page}"
+
+    # ------------------------------------------------------------------
     # Inventory sync
     # ------------------------------------------------------------------
     def get_managed_endpoints(self) -> list[dict]:
-        """All endpoints in the org. Action1's `next_page` is a complete URL
-        (already carrying its own query string) to GET as-is for the next
-        page -- not a token to wrap in a new `next_page=` parameter."""
-        endpoints: list[dict] = []
-        url: str | None = f"{self.base_url}{ENDPOINTS_PATH.format(org_id=self.org_id)}"
-        params: dict | None = {"fields": "*"}
-        while url:
-            resp = self._request("get", url, params=params)
-            data = resp.json()
-            endpoints.extend(data.get("data") or data.get("items") or [])
-            url = data.get("next_page")
-            params = None  # next_page already has its own complete query string
-        return endpoints
+        """All endpoints in the org."""
+        url = f"{self.base_url}{ENDPOINTS_PATH.format(org_id=self.org_id)}"
+        return self._get_paginated(url, params={"fields": "*"})
 
     def _fetch_installed_software(self, endpoint_id: str) -> list[dict]:
-        """Installed software for one endpoint. UNVERIFIED against Action1's
-        real API -- confirm this path/shape once console/Swagger access is
-        available (see module docstring)."""
-        url = f"{self.base_url}{SOFTWARE_PATH.format(endpoint_id=endpoint_id)}"
-        resp = self._request("get", url)
-        data = resp.json()
-        return data.get("data") or data.get("items") or []
+        """Installed software for one endpoint. Requires the API client's
+        role to have the `view_installed_software` permission, or every
+        call here 403s regardless of the path being correct. Rows come back
+        as Action1's generic report format -- the actual name/vendor/version
+        live under each row's `fields` dict, not as top-level keys."""
+        url = f"{self.base_url}{SOFTWARE_PATH.format(org_id=self.org_id, endpoint_id=endpoint_id)}"
+        rows = self._get_paginated(url)
+        software = []
+        for row in rows:
+            fields = row.get("fields") or {}
+            name = fields.get("Name")
+            if not name:
+                continue
+            software.append({"name": name, "vendor": fields.get("Vendor"), "version": fields.get("Version")})
+        return software
 
     def sync_inventory(self, cache: VulnCache) -> dict:
         """Pull the org's managed endpoints and their installed software from
@@ -154,12 +178,10 @@ class Action1Client:
         software: list[dict] = []
         for ep in endpoints:
             for item in self._fetch_installed_software(ep["id"]):
-                if not item.get("name"):
-                    continue
                 software.append(
                     {
                         "endpoint_id": ep["id"],
-                        "vendor": item.get("vendor") or item.get("publisher"),
+                        "vendor": item.get("vendor"),
                         "product": item["name"],
                         "version": item.get("version"),
                     }

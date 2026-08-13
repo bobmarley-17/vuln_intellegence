@@ -88,16 +88,60 @@ class Action1ClientTests(unittest.TestCase):
         second_get = [c for c in session.calls if c[0] == "get"][1]
         self.assertEqual(second_get[1], page2_url)
 
+    def test_resolves_root_relative_next_page_against_the_api_origin(self):
+        """Action1's own docs show next_page as a root-relative path (e.g.
+        '/API/...?limit=60&from=10') even though we've observed absolute
+        URLs in practice -- handle both so a documented-but-unobserved
+        format doesn't break pagination."""
+        base = "https://app.action1.test/api/3.0"
+        session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"items": [{"id": 1, "name": "host-a"}], "next_page": "/api/3.0/endpoints/managed/org-1?from=1"}
+                ),
+                ("get", f"{base}/endpoints/managed/org-1?from=1"): FakeResponse(
+                    {"items": [{"id": 2, "name": "host-b"}], "next_page": None}
+                ),
+            }
+        )
+        client = make_client(session)
+        endpoints = client.get_managed_endpoints()
+        self.assertEqual([e["name"] for e in endpoints], ["host-a", "host-b"])
+
+    def test_fetch_installed_software_reads_report_style_fields(self):
+        """Installed-software rows are Action1's generic report format:
+        real data lives under each row's `fields` dict (Name/Vendor/Version),
+        not as top-level keys -- and the path needs both org_id and
+        endpoint_id, confirmed against a real tenant's Swagger reference."""
+        base = "https://app.action1.test/api/3.0"
+        session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/installed-software/org-1/data/1"): FakeResponse(
+                    {
+                        "items": [
+                            {"fields": {"Name": "Widget", "Vendor": "Acme", "Version": "1.0"}},
+                            {"fields": {"Name": "", "Vendor": "Acme", "Version": "2.0"}},  # no name -> skipped
+                        ]
+                    }
+                ),
+            }
+        )
+        client = make_client(session)
+        software = client._fetch_installed_software("1")
+        self.assertEqual(software, [{"name": "Widget", "vendor": "Acme", "version": "1.0"}])
+
     def test_sync_inventory_populates_cache(self):
         base = "https://app.action1.test/api/3.0"
         session = FakeAction1Session(
             {
                 ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
                 ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
-                    {"data": [{"id": 1, "name": "host-a", "os_name": "Windows"}], "next_page": None}
+                    {"items": [{"id": 1, "name": "host-a", "os_name": "Windows"}], "next_page": None}
                 ),
-                ("get", f"{base}/endpoints/1/software"): FakeResponse(
-                    {"data": [{"name": "Widget", "vendor": "Acme", "version": "1.0"}]}
+                ("get", f"{base}/installed-software/org-1/data/1"): FakeResponse(
+                    {"items": [{"fields": {"Name": "Widget", "Vendor": "Acme", "Version": "1.0"}}]}
                 ),
             }
         )
