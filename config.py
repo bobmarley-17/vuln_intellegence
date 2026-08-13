@@ -67,6 +67,16 @@ class Config:
     # --- API keys (secrets, env-only) ---
     nvd_api_key: str | None = field(default_factory=lambda: os.getenv("NVD_API_KEY"))
     github_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_TOKEN"))
+    action1_client_id: str | None = field(default_factory=lambda: os.getenv("ACTION1_CLIENT_ID"))
+    action1_client_secret: str | None = field(default_factory=lambda: os.getenv("ACTION1_CLIENT_SECRET"))
+    action1_org_id: str | None = field(default_factory=lambda: os.getenv("ACTION1_ORG_ID"))
+    action1_base_url: str = field(
+        default_factory=lambda: _get("action1_base_url", "https://app.action1.com/api/3.0")
+    )
+    rt_url: str | None = field(default_factory=lambda: os.getenv("RT_URL"))
+    rt_username: str | None = field(default_factory=lambda: os.getenv("RT_USERNAME"))
+    rt_password: str | None = field(default_factory=lambda: os.getenv("RT_PASSWORD"))
+    rt_queue: str = field(default_factory=lambda: _get("rt_queue", "General"))
 
     # --- Dashboard session signing (secret, env-only or auto-generated) ---
     secret_key: str = field(default_factory=_load_or_create_secret_key)
@@ -107,6 +117,14 @@ class Config:
     @property
     def nvd_rate_limit_delay(self) -> float:
         return 0.6 if self.nvd_api_key else 6.0
+
+    @property
+    def action1_configured(self) -> bool:
+        return bool(self.action1_client_id and self.action1_client_secret and self.action1_org_id)
+
+    @property
+    def rt_configured(self) -> bool:
+        return bool(self.rt_url and self.rt_username and self.rt_password)
 
     @property
     def cache_db_path(self) -> str:

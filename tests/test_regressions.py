@@ -9,6 +9,7 @@ from modules.cache import VulnCache
 from modules.models import Article, EnrichedCVE
 from modules.normalizer import (
     collapse_affected_products,
+    match_cve_to_product,
     normalize_cpe_matches,
     product_version_affected,
     version_in_range,
@@ -70,6 +71,22 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(product_version_affected(affected_range, "3.1"))
         self.assertFalse(product_version_affected(affected_range, "2.0"))
         self.assertFalse(product_version_affected(None, "1.0"))
+
+    def test_match_cve_to_product_reports_version_status(self):
+        cve = EnrichedCVE(
+            cve_id="CVE-2024-0001",
+            affected_products=[AffectedProduct("Acme", "Widget", "< 2.0")],
+        )
+        vulnerable = match_cve_to_product(cve, "Acme", "Widget", "1.0")
+        self.assertEqual(vulnerable["version_status"], "vulnerable")
+
+        not_affected = match_cve_to_product(cve, "Acme", "Widget", "3.0")
+        self.assertEqual(not_affected["version_status"], "not_affected")
+
+        unknown = match_cve_to_product(cve, "Acme", "Widget", version=None)
+        self.assertEqual(unknown["version_status"], "unknown")
+
+        self.assertIsNone(match_cve_to_product(cve, "Acme", "Other Product", "1.0"))
 
 
 if __name__ == "__main__":

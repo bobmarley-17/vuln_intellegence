@@ -731,6 +731,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
                 renderCveModal(body);
                 loadRelatedCves(body);
+                loadRtTickets(body);
                 if (options.openModal) {
                     bootstrap.Modal.getOrCreateInstance(document.getElementById('cveDetailModal')).show();
                 }
@@ -867,6 +868,13 @@ document.addEventListener('DOMContentLoaded', function () {
                     <span class="text-muted small">Loading&hellip;</span>
                 </div>
             </div>
+
+            <div class="detail-section">
+                <h6>Request Tracker Tickets</h6>
+                <div id="related-rt-tickets-container" class="related-cve-list">
+                    <span class="text-muted small">Loading&hellip;</span>
+                </div>
+            </div>
         `;
 
         const toggleBtn = document.getElementById('toggle-references-btn');
@@ -915,11 +923,137 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(error => console.error('Error loading related CVEs:', error));
     }
 
+    // Request Tracker section of the CVE modal: a local draft (if one
+    // exists) always takes priority over a live RT search, since the draft
+    // -- not a raw search hit -- is what Vuln Intel considers authoritative
+    // for "have we already flagged this." A live search only runs as a
+    // fallback, to catch tickets a human filed directly in RT.
+    function loadRtTickets(cve) {
+        const container = document.getElementById('related-rt-tickets-container');
+        if (!container) return;
+        fetch(`${API_BASE}/rt/cve/${encodeURIComponent(cve.cve_id)}/draft`)
+            .then(response => response.json())
+            .then(data => {
+                const current = document.getElementById('related-rt-tickets-container');
+                if (!current) return;
+                if (!data.configured) {
+                    current.innerHTML = '<span class="text-muted small">Request Tracker is not configured.</span>';
+                    return;
+                }
+                if (data.draft) {
+                    renderCveRtDraftState(current, data.draft);
+                    return;
+                }
+                loadExistingRtTicketsFallback(current, cve.cve_id);
+            })
+            .catch(error => console.error('Error loading RT draft:', error));
+    }
+
+    function renderCveRtDraftState(container, draft) {
+        const reviewLink = `<button type="button" class="btn btn-link btn-sm p-0" data-action="review-draft" data-draft-id="${draft.id}">Review Draft</button>`;
+        if (draft.status === 'Created') {
+            container.innerHTML = `
+                <div>RT Ticket <strong>#${draft.rt_ticket_id}</strong></div>
+                ${draft.rt_ticket_url ? `<a href="${escapeHtml(draft.rt_ticket_url)}" target="_blank" rel="noopener noreferrer">Open in RT</a>` : ''}
+            `;
+        } else if (draft.status === 'Rejected') {
+            container.innerHTML = `<div>RT Ticket Draft ${rtDraftStatusBadge('Rejected')}</div>${reviewLink}`;
+        } else if (draft.status === 'Creation Failed') {
+            container.innerHTML = `<div>RT Ticket Draft ${rtDraftStatusBadge('Creation Failed')}</div>${reviewLink}`;
+        } else {
+            container.innerHTML = `
+                <div>RT Ticket Draft ${rtDraftStatusBadge(draft.status)}</div>
+                <div class="text-muted small">Created: ${escapeHtml(new Date(draft.created_at).toLocaleDateString())}</div>
+                ${reviewLink}
+            `;
+        }
+    }
+
+    function loadExistingRtTicketsFallback(container, cveId) {
+        fetch(`${API_BASE}/rt/cve/${encodeURIComponent(cveId)}/tickets`)
+            .then(response => response.json())
+            .then(data => {
+                const current = document.getElementById('related-rt-tickets-container');
+                if (!current) return;
+                if (data.error) {
+                    current.innerHTML = `<span class="text-danger small">Could not reach Request Tracker: ${escapeHtml(data.error)}</span>`;
+                    return;
+                }
+                const tickets = data.tickets || [];
+                if (tickets.length === 0) {
+                    current.innerHTML = `
+                        <span class="text-muted small d-block mb-2">No RT ticket draft.</span>
+                        <button type="button" class="btn btn-outline-primary btn-sm" data-action="create-ticket-draft" data-cve-id="${escapeHtml(cveId)}">
+                            <i class="bi bi-file-earmark-plus"></i> Create Ticket Draft
+                        </button>
+                    `;
+                    return;
+                }
+                current.innerHTML = `
+                    <div class="text-muted small mb-1">Existing RT Ticket${tickets.length > 1 ? 's' : ''} (found via search, no local draft)</div>
+                    ${tickets.map(t => `
+                        <a href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer" class="related-cve-link">
+                            <span class="cve-id-link">#${t.id} ${escapeHtml(t.subject || '')}</span>
+                            <span class="badge bg-secondary">${escapeHtml(t.status || 'unknown')}</span>
+                        </a>
+                    `).join('')}
+                `;
+            })
+            .catch(error => console.error('Error loading RT tickets:', error));
+    }
+
+    function createTicketDraft(cveId, button) {
+        const original = button ? button.innerHTML : null;
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Drafting...';
+        }
+        return fetch(`${API_BASE}/rt/drafts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cve_id: cveId }),
+        })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status === 201) {
+                    showToast('RT ticket draft created. Review it before it can become a real ticket.', 'success');
+                } else {
+                    showToast(body.error || 'Could not create draft.', 'danger');
+                }
+                return { status, body };
+            })
+            .catch(error => {
+                console.error('Error creating draft:', error);
+                showToast('A network error occurred.', 'danger');
+                return { status: 0, body: {} };
+            })
+            .finally(() => {
+                if (button) {
+                    button.disabled = false;
+                    button.innerHTML = original;
+                }
+                fetchRtDraftsSummary();
+            });
+    }
+
     document.getElementById('cve-detail-body').addEventListener('click', (e) => {
         const link = e.target.closest('.related-cve-link');
         if (link) {
             e.preventDefault();
             fetchAndShowCveDetails(link.dataset.cveId);
+            return;
+        }
+        const draftBtn = e.target.closest('[data-action="create-ticket-draft"]');
+        if (draftBtn) {
+            const cveId = draftBtn.dataset.cveId;
+            createTicketDraft(cveId, draftBtn).then(({ status }) => {
+                if (status === 201) loadRtTickets({ cve_id: cveId });
+            });
+            return;
+        }
+        const reviewBtn = e.target.closest('[data-action="review-draft"]');
+        if (reviewBtn) {
+            openReviewDraftModal(Number(reviewBtn.dataset.draftId));
         }
     });
 
@@ -1345,6 +1479,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 document.getElementById('setting-concurrency').textContent = data.concurrency;
                 document.getElementById('setting-nvd-key').textContent = data.nvd_api_key_configured ? 'Yes' : 'No (using unauthenticated NVD rate limit)';
                 document.getElementById('setting-nvd-delay').textContent = `${data.nvd_rate_limit_delay_seconds}s`;
+                document.getElementById('setting-action1-configured').textContent = data.action1_configured ? 'Yes' : 'No (set ACTION1_CLIENT_ID/SECRET/ORG_ID)';
+                document.getElementById('setting-rt-configured').textContent = data.rt_configured ? 'Yes' : 'No (set RT_URL/RT_USERNAME/RT_PASSWORD)';
                 document.getElementById('setting-cache-ttl').textContent = `${data.cache_ttl_hours}h`;
                 document.getElementById('setting-cache-folder').textContent = data.cache_folder;
                 document.getElementById('setting-output-folder').textContent = data.output_folder;
@@ -2279,6 +2415,570 @@ document.addEventListener('DOMContentLoaded', function () {
         ]);
     });
 
+    // --- Asset Exposure page (Action1) ---
+    const action1State = { all: [], q: '', sortBy: 'risk_score', sortDir: 'desc' };
+    let lastFilteredAction1 = [];
+    const ACTION1_STATUS_LABELS = { vulnerable: 'Vulnerable', unknown: 'Unknown' };
+
+    // No direct ticket creation from this page -- only drafts, which still
+    // require analyst approval before a real RT ticket exists.
+    function assetExposureTicketActionHtml(r) {
+        if (r.rt_ticket_id) {
+            return `<span class="badge bg-success"><i class="bi bi-check-lg"></i> Ticket #${r.rt_ticket_id}</span>`;
+        }
+        if (r.rt_draft_status) {
+            return `<button type="button" class="btn btn-outline-secondary btn-sm" data-action="review-draft" data-draft-id="${r.rt_draft_id}">${escapeHtml(r.rt_draft_status)}</button>`;
+        }
+        return `<button type="button" class="btn btn-outline-primary btn-sm" data-action="create-ticket-draft" data-cve-id="${escapeHtml(r.cve_id)}"><i class="bi bi-file-earmark-plus"></i> Create Draft</button>`;
+    }
+
+    function fetchAction1Status() {
+        fetch(`${API_BASE}/action1/status`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('asset-exposure-not-configured').classList.toggle('d-none', data.configured);
+                document.getElementById('asset-exposure-content').classList.toggle('d-none', !data.configured);
+                const statusEl = document.getElementById('asset-exposure-sync-status');
+                if (!data.configured) {
+                    statusEl.textContent = '';
+                    return;
+                }
+                if (!data.last_synced_at) {
+                    statusEl.textContent = 'Never synced yet.';
+                    return;
+                }
+                const synced = new Date(data.last_synced_at);
+                const when = Number.isNaN(synced.getTime()) ? data.last_synced_at : synced.toLocaleString();
+                statusEl.textContent = `Last synced ${when} — ${data.endpoint_count} endpoint${data.endpoint_count === 1 ? '' : 's'}, ${data.software_count} software row${data.software_count === 1 ? '' : 's'}.`;
+            })
+            .catch(error => console.error('Error fetching Action1 status:', error));
+    }
+
+    function fetchAction1Exposure() {
+        fetch(`${API_BASE}/action1/exposure`)
+            .then(response => response.json())
+            .then(data => {
+                action1State.all = data.results || [];
+                renderAssetExposureTable();
+                const el = document.getElementById('asset-exposure-summary-line');
+                if (el) {
+                    el.textContent = `${data.total} exposure row${data.total === 1 ? '' : 's'} (${data.vulnerable_count} confirmed vulnerable) across your Action1-managed endpoints.`;
+                }
+            })
+            .catch(error => console.error('Error fetching Action1 exposure:', error));
+    }
+
+    function renderAssetExposureTable() {
+        const tbody = document.getElementById('asset-exposure-table-body');
+        const cardContainer = document.getElementById('asset-exposure-card-view');
+        const emptyState = document.getElementById('asset-exposure-empty-state');
+        let rows = action1State.all;
+        if (action1State.q) {
+            const q = action1State.q.toLowerCase();
+            rows = rows.filter(r =>
+                r.cve_id.toLowerCase().includes(q) ||
+                (r.hostname || '').toLowerCase().includes(q) ||
+                (r.product || '').toLowerCase().includes(q)
+            );
+        }
+        rows = sortRows(rows, action1State.sortBy, action1State.sortDir);
+        lastFilteredAction1 = rows;
+
+        tbody.innerHTML = '';
+        cardContainer.innerHTML = '';
+        if (action1State.all.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">No exposure rows match your search.</td></tr>';
+            cardContainer.innerHTML = '<p class="text-muted text-center py-4">No exposure rows match your search.</p>';
+            return;
+        }
+        rows.forEach(r => {
+            const statusLabel = ACTION1_STATUS_LABELS[r.version_status] || r.version_status;
+            const statusBadge = r.version_status === 'vulnerable'
+                ? `<span class="badge bg-danger">${statusLabel}</span>`
+                : `<span class="badge bg-secondary">${statusLabel}</span>`;
+
+            const ticketAction = assetExposureTicketActionHtml(r);
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${escapeHtml(r.cve_id)}</strong></td>
+                <td class="text-center">${severityBadgeOrDash(r.risk_level)}</td>
+                <td class="text-center">${r.kev_listed ? '<span class="badge bg-danger"><i class="bi bi-bullseye"></i> KEV</span>' : ''}</td>
+                <td>${escapeHtml(r.hostname || 'Unknown host')}</td>
+                <td>${escapeHtml(r.product || '')}</td>
+                <td>${escapeHtml(r.installed_version || 'Unknown')}</td>
+                <td class="text-center">${statusBadge}</td>
+                <td class="text-center">${ticketAction}</td>
+            `;
+            row.addEventListener('click', () => fetchAndShowCveDetails(r.cve_id, { openModal: true }));
+            tbody.appendChild(row);
+
+            const card = document.createElement('div');
+            card.className = 'entity-card is-clickable';
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(r.cve_id)};"><i class="bi bi-hdd-network"></i></span>
+                    <div>
+                        <div class="entity-card-title">${escapeHtml(r.cve_id)}</div>
+                        <div class="entity-card-subtitle">${escapeHtml(r.hostname || 'Unknown host')} &middot; ${escapeHtml(r.product || '')}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    ${severityBadgeOrDash(r.risk_level)}
+                    ${r.kev_listed ? '<span class="metric-chip chip-kev"><i class="bi bi-bullseye"></i> KEV</span>' : ''}
+                    ${statusBadge}
+                </div>
+                <div class="mt-2">${ticketAction}</div>
+            `;
+            card.addEventListener('click', () => fetchAndShowCveDetails(r.cve_id, { openModal: true }));
+            cardContainer.appendChild(card);
+        });
+    }
+
+    wireSortableHeaders('assetExposureTable', () => action1State, renderAssetExposureTable);
+
+    function handleAssetExposureTicketClick(e) {
+        const draftBtn = e.target.closest('[data-action="create-ticket-draft"]');
+        if (draftBtn) {
+            e.stopPropagation();
+            createTicketDraft(draftBtn.dataset.cveId, draftBtn).then(({ status }) => {
+                if (status === 201) fetchAction1Exposure();
+            });
+            return;
+        }
+        const reviewBtn = e.target.closest('[data-action="review-draft"]');
+        if (reviewBtn) {
+            e.stopPropagation();
+            openReviewDraftModal(Number(reviewBtn.dataset.draftId));
+        }
+    }
+    document.getElementById('asset-exposure-table-body').addEventListener('click', handleAssetExposureTicketClick);
+    document.getElementById('asset-exposure-card-view').addEventListener('click', handleAssetExposureTicketClick);
+
+    let assetExposureSearchTimeout;
+    document.getElementById('asset-exposure-search').addEventListener('keyup', () => {
+        clearTimeout(assetExposureSearchTimeout);
+        assetExposureSearchTimeout = setTimeout(() => {
+            action1State.q = document.getElementById('asset-exposure-search').value.trim();
+            renderAssetExposureTable();
+        }, 300);
+    });
+
+    document.getElementById('asset-exposure-export-btn').addEventListener('click', () => {
+        exportToCsv('asset-exposure.csv', lastFilteredAction1, [
+            { key: 'cve_id', label: 'CVE' },
+            { key: 'risk_level', label: 'Severity' },
+            { key: 'hostname', label: 'Endpoint' },
+            { key: 'vendor', label: 'Vendor' },
+            { key: 'product', label: 'Product' },
+            { key: 'installed_version', label: 'Installed Version' },
+            { key: 'fixed_version', label: 'Fixed Version' },
+            { key: 'version_status', label: 'Status' },
+        ]);
+    });
+
+    document.getElementById('asset-exposure-sync-btn').addEventListener('click', () => {
+        fetch(`${API_BASE}/action1/sync`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body }) => {
+                if (status === 202) {
+                    showToast('Action1 sync started.', 'success');
+                    startStatusPolling();
+                } else {
+                    showToast(body.error || 'Could not start Action1 sync.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error starting Action1 sync:', error);
+                showToast('A network error occurred.', 'danger');
+            });
+    });
+
+    // --- RT Ticket Drafts (draft -> review -> approve workflow) ---
+    const rtDraftsState = { all: [], q: '', status: '', sortBy: 'created_at', sortDir: 'desc' };
+    let lastFilteredRtDrafts = [];
+    let lastRtDraftsPendingCount = null;
+    let currentReviewDraftId = null;
+
+    const RT_DRAFT_STATUS_BADGE_CLASS = {
+        'Pending Approval': 'bg-warning text-dark',
+        'Created': 'bg-success',
+        'Rejected': 'bg-secondary',
+        'Creation Failed': 'bg-danger',
+        'Cancelled': 'bg-secondary',
+        'Draft': 'bg-info text-dark',
+        'Approved': 'bg-success',
+    };
+
+    function rtDraftStatusBadge(status) {
+        const cls = RT_DRAFT_STATUS_BADGE_CLASS[status] || 'bg-secondary';
+        return `<span class="badge ${cls}">${escapeHtml(status || 'Unknown')}</span>`;
+    }
+
+    function fetchRtDraftsSummary() {
+        fetch(`${API_BASE}/rt/drafts/summary`)
+            .then(response => response.json())
+            .then(data => {
+                const notConfigured = document.getElementById('rt-drafts-not-configured');
+                const content = document.getElementById('rt-drafts-content');
+                if (notConfigured) notConfigured.classList.toggle('d-none', data.configured);
+                if (content) content.classList.toggle('d-none', !data.configured);
+
+                document.getElementById('rt-drafts-pending-count').textContent = data.configured ? data.pending : '—';
+                const trendEl = document.getElementById('trend-rt-drafts');
+                if (trendEl) {
+                    trendEl.textContent = data.configured
+                        ? `${data.critical_pending} Critical · ${data.kev_pending} KEV`
+                        : 'Not configured';
+                }
+                if (data.configured && lastRtDraftsPendingCount !== null && data.pending > lastRtDraftsPendingCount) {
+                    showToast('New RT ticket draft awaiting review.', 'info');
+                }
+                lastRtDraftsPendingCount = data.pending;
+            })
+            .catch(error => console.error('Error fetching RT drafts summary:', error));
+    }
+
+    function fetchRtDrafts() {
+        const params = new URLSearchParams();
+        if (rtDraftsState.status) params.set('status', rtDraftsState.status);
+        fetch(`${API_BASE}/rt/drafts?${params.toString()}`)
+            .then(response => response.json())
+            .then(data => {
+                rtDraftsState.all = data.drafts || [];
+                renderRtDraftsTable();
+                const el = document.getElementById('rt-drafts-summary-line');
+                if (el) {
+                    const pending = rtDraftsState.all.filter(d => d.status === 'Pending Approval').length;
+                    el.textContent = `${rtDraftsState.all.length} draft${rtDraftsState.all.length === 1 ? '' : 's'} (${pending} pending approval). Vuln Intel never creates an RT ticket without approval.`;
+                }
+            })
+            .catch(error => console.error('Error fetching RT drafts:', error));
+    }
+
+    function renderRtDraftsTable() {
+        const tbody = document.getElementById('rt-drafts-table-body');
+        const cardContainer = document.getElementById('rt-drafts-card-view');
+        const emptyState = document.getElementById('rt-drafts-empty-state');
+        let rows = rtDraftsState.all;
+        if (rtDraftsState.q) {
+            const q = rtDraftsState.q.toLowerCase();
+            rows = rows.filter(d => d.cve_id.toLowerCase().includes(q));
+        }
+        rows = sortRows(rows, rtDraftsState.sortBy, rtDraftsState.sortDir);
+        lastFilteredRtDrafts = rows;
+
+        tbody.innerHTML = '';
+        cardContainer.innerHTML = '';
+        if (rtDraftsState.all.length === 0) {
+            emptyState.classList.remove('d-none');
+            return;
+        }
+        emptyState.classList.add('d-none');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-4">No drafts match your filters.</td></tr>';
+            cardContainer.innerHTML = '<p class="text-muted text-center py-4">No drafts match your filters.</p>';
+            return;
+        }
+        rows.forEach(d => {
+            const ticketCell = d.rt_ticket_id ? `#${d.rt_ticket_id}` : '<span class="text-muted">&mdash;</span>';
+            const reviewBtn = `<button type="button" class="btn btn-outline-primary btn-sm" data-action="review-draft" data-draft-id="${d.id}">Review</button>`;
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><strong>${escapeHtml(d.cve_id)}</strong></td>
+                <td class="text-center">${severityBadgeOrDash(d.severity)}</td>
+                <td class="text-center">${d.kev_listed ? '<span class="badge bg-danger"><i class="bi bi-bullseye"></i> KEV</span>' : ''}</td>
+                <td class="text-center">${d.affected_endpoint_count ?? '<span class="text-muted">&mdash;</span>'}</td>
+                <td>${ticketCell}</td>
+                <td class="text-center">${rtDraftStatusBadge(d.status)}</td>
+                <td class="text-center">${reviewBtn}</td>
+            `;
+            tbody.appendChild(row);
+
+            const card = document.createElement('div');
+            card.className = 'entity-card';
+            card.innerHTML = `
+                <div class="entity-card-head">
+                    <span class="avatar-circle" style="background: ${avatarColor(d.cve_id)};"><i class="bi bi-file-earmark-text"></i></span>
+                    <div>
+                        <div class="entity-card-title">${escapeHtml(d.cve_id)}</div>
+                        <div class="entity-card-subtitle">${escapeHtml(d.vendor || '')} ${escapeHtml(d.product || '')}</div>
+                    </div>
+                </div>
+                <div class="entity-card-metrics">
+                    ${severityBadgeOrDash(d.severity)}
+                    ${d.kev_listed ? '<span class="metric-chip chip-kev"><i class="bi bi-bullseye"></i> KEV</span>' : ''}
+                    ${rtDraftStatusBadge(d.status)}
+                    ${d.affected_endpoint_count ? `<span class="metric-chip chip-accent">${d.affected_endpoint_count} endpoints</span>` : ''}
+                </div>
+                <div class="mt-2">${reviewBtn}</div>
+            `;
+            cardContainer.appendChild(card);
+        });
+    }
+
+    wireSortableHeaders('rtDraftsTable', () => rtDraftsState, renderRtDraftsTable);
+    wireViewToggle('rt-drafts-view-toggle', 'rt-drafts-card-view', 'rt-drafts-table-view');
+
+    let rtDraftsSearchTimeout;
+    document.getElementById('rt-drafts-search').addEventListener('keyup', () => {
+        clearTimeout(rtDraftsSearchTimeout);
+        rtDraftsSearchTimeout = setTimeout(() => {
+            rtDraftsState.q = document.getElementById('rt-drafts-search').value.trim();
+            renderRtDraftsTable();
+        }, 300);
+    });
+
+    document.getElementById('rt-drafts-status-filter').addEventListener('change', () => {
+        rtDraftsState.status = document.getElementById('rt-drafts-status-filter').value;
+        fetchRtDrafts();
+    });
+
+    document.getElementById('rt-drafts-export-btn').addEventListener('click', () => {
+        exportToCsv('rt-drafts.csv', lastFilteredRtDrafts, [
+            { key: 'cve_id', label: 'CVE' },
+            { key: 'severity', label: 'Severity' },
+            { key: 'affected_endpoint_count', label: 'Affected Endpoints' },
+            { key: 'rt_ticket_id', label: 'Ticket #' },
+            { key: 'status', label: 'Status' },
+        ]);
+    });
+
+    function handleRtDraftsReviewClick(e) {
+        const btn = e.target.closest('[data-action="review-draft"]');
+        if (!btn) return;
+        openReviewDraftModal(Number(btn.dataset.draftId));
+    }
+    document.getElementById('rt-drafts-table-body').addEventListener('click', handleRtDraftsReviewClick);
+    document.getElementById('rt-drafts-card-view').addEventListener('click', handleRtDraftsReviewClick);
+
+    // --- Review Draft modal ---
+    function openReviewDraftModal(draftId) {
+        currentReviewDraftId = draftId;
+        const body = document.getElementById('review-draft-body');
+        const footer = document.getElementById('review-draft-footer');
+        body.innerHTML = '<span class="text-muted small">Loading&hellip;</span>';
+        footer.innerHTML = '';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('reviewDraftModal')).show();
+        loadReviewDraft(draftId);
+    }
+
+    function loadReviewDraft(draftId) {
+        fetch(`${API_BASE}/rt/drafts/${draftId}`)
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                if (currentReviewDraftId !== draftId) return; // modal moved on
+                const body = document.getElementById('review-draft-body');
+                if (status !== 200) {
+                    body.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(data.error || 'Could not load draft.')}</div>`;
+                    document.getElementById('review-draft-footer').innerHTML = '';
+                    return;
+                }
+                renderReviewDraftModal(data);
+            })
+            .catch(error => {
+                console.error('Error loading draft:', error);
+                document.getElementById('review-draft-body').innerHTML = '<div class="alert alert-danger mb-0">A network error occurred.</div>';
+            });
+    }
+
+    function renderReviewDraftModal(draft) {
+        document.getElementById('reviewDraftModalLabel').textContent = `Review Draft: ${draft.cve_id}`;
+        const body = document.getElementById('review-draft-body');
+
+        const exposureSection = (draft.affected_endpoint_count !== null && draft.affected_endpoint_count !== undefined)
+            ? `<div class="detail-section"><h6>Environment Exposure</h6><p class="mb-0">Action1 Exposure: <strong>${draft.affected_endpoint_count}</strong> affected endpoint${draft.affected_endpoint_count === 1 ? '' : 's'}</p></div>`
+            : '';
+
+        const auditRows = (draft.audit || []).map(a => `
+            <tr>
+                <td>${escapeHtml(new Date(a.created_at).toLocaleString())}</td>
+                <td>${escapeHtml((a.event || '').replace(/_/g, ' '))}</td>
+                <td>${escapeHtml(a.actor)}</td>
+                <td>${escapeHtml(a.detail || '')}</td>
+            </tr>
+        `).join('');
+
+        let outcomeBanner = '';
+        if (draft.status === 'Created') {
+            outcomeBanner = `
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle-fill"></i> RT ticket created successfully &mdash; <strong>#${draft.rt_ticket_id}</strong>
+                    ${draft.rt_ticket_url ? `<a href="${escapeHtml(draft.rt_ticket_url)}" target="_blank" rel="noopener noreferrer" class="ms-2">Open in Request Tracker</a>` : ''}
+                </div>`;
+        } else if (draft.status === 'Rejected') {
+            outcomeBanner = `<div class="alert alert-secondary mb-3">This draft was rejected.${draft.rejection_reason ? ` Reason: ${escapeHtml(draft.rejection_reason)}` : ''}</div>`;
+        } else if (draft.status === 'Creation Failed') {
+            outcomeBanner = `<div class="alert alert-danger mb-3">Unable to create RT ticket.<br>Reason: ${escapeHtml(draft.failure_reason || 'Unknown error')}</div>`;
+        }
+
+        const editable = draft.status === 'Pending Approval' || draft.status === 'Creation Failed';
+
+        body.innerHTML = `
+            ${outcomeBanner}
+            <div class="detail-section">
+                <h6>Vulnerability</h6>
+                <div class="row g-2">
+                    <div class="col-md-3"><span class="text-muted small">CVE</span><div>${escapeHtml(draft.cve_id)}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">Severity</span><div>${severityBadgeOrDash(draft.severity)}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">CVSS</span><div>${draft.cvss_score ?? 'N/A'}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">EPSS</span><div>${draft.epss_score ?? 'N/A'}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">KEV</span><div>${draft.kev_listed ? 'Yes' : 'No'}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">Vendor</span><div>${escapeHtml(draft.vendor || 'Unknown')}</div></div>
+                    <div class="col-md-3"><span class="text-muted small">Product</span><div>${escapeHtml(draft.product || 'Unknown')}</div></div>
+                </div>
+            </div>
+            ${exposureSection}
+            <div class="detail-section">
+                <h6>Proposed RT Ticket</h6>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Queue</label>
+                        <input type="text" class="form-control" id="draft-queue-input" value="${escapeHtml(draft.proposed_queue || '')}" ${editable ? '' : 'disabled'}>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Priority</label>
+                        <input type="text" class="form-control" id="draft-priority-input" value="${escapeHtml(draft.proposed_priority || '')}" ${editable ? '' : 'disabled'}>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Owner</label>
+                        <input type="text" class="form-control" id="draft-owner-input" value="${escapeHtml(draft.proposed_owner || '')}" ${editable ? '' : 'disabled'}>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Subject</label>
+                        <input type="text" class="form-control" id="draft-subject-input" value="${escapeHtml(draft.proposed_subject || '')}" ${editable ? '' : 'disabled'}>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Body</label>
+                        <textarea class="form-control" id="draft-body-input" rows="10" ${editable ? '' : 'disabled'}>${escapeHtml(draft.proposed_body || '')}</textarea>
+                    </div>
+                </div>
+                ${editable ? '<button type="button" class="btn btn-outline-secondary btn-sm mt-2" id="save-draft-btn"><i class="bi bi-save"></i> Save Changes</button>' : ''}
+            </div>
+            <div class="detail-section">
+                <h6>Audit History</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm app-table mb-0">
+                        <thead><tr><th>When</th><th>Event</th><th>Actor</th><th>Detail</th></tr></thead>
+                        <tbody>${auditRows || '<tr><td colspan="4" class="text-muted text-center">No history yet.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+
+        const saveBtn = document.getElementById('save-draft-btn');
+        if (saveBtn) saveBtn.addEventListener('click', () => saveDraftChanges(draft.id));
+
+        renderReviewDraftFooter(draft);
+    }
+
+    function saveDraftChanges(draftId) {
+        const payload = {
+            subject: document.getElementById('draft-subject-input').value,
+            body: document.getElementById('draft-body-input').value,
+            queue: document.getElementById('draft-queue-input').value,
+            priority: document.getElementById('draft-priority-input').value,
+            owner: document.getElementById('draft-owner-input').value,
+        };
+        fetch(`${API_BASE}/rt/drafts/${draftId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                if (status === 200) {
+                    showToast('Draft updated.', 'success');
+                    if (currentReviewDraftId === draftId) renderReviewDraftModal(data);
+                } else {
+                    showToast(data.error || 'Could not save draft.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving draft:', error);
+                showToast('A network error occurred.', 'danger');
+            });
+    }
+
+    function renderReviewDraftFooter(draft) {
+        const footer = document.getElementById('review-draft-footer');
+        if (draft.status === 'Pending Approval' || draft.status === 'Creation Failed') {
+            const approveLabel = draft.status === 'Creation Failed'
+                ? '<i class="bi bi-arrow-clockwise"></i> Retry'
+                : '<i class="bi bi-check-circle"></i> Approve & Create RT Ticket';
+            footer.innerHTML = `
+                <button type="button" class="btn btn-outline-danger" id="reject-draft-btn">Reject Draft</button>
+                <button type="button" class="btn btn-primary" id="approve-draft-btn">${approveLabel}</button>
+            `;
+            document.getElementById('reject-draft-btn').addEventListener('click', () => {
+                document.getElementById('reject-draft-reason').value = '';
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('rejectDraftModal')).show();
+            });
+            document.getElementById('approve-draft-btn').addEventListener('click', (e) => approveDraft(draft.id, e.currentTarget));
+        } else {
+            footer.innerHTML = '<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>';
+        }
+    }
+
+    function approveDraft(draftId, button) {
+        const original = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Creating...';
+        fetch(`${API_BASE}/rt/drafts/${draftId}/approve`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                if (status === 200) {
+                    showToast(`RT ticket #${data.ticket_id} created.`, 'success');
+                } else {
+                    showToast(data.error || 'Could not create RT ticket.', 'danger');
+                }
+                if (currentReviewDraftId === draftId) loadReviewDraft(draftId);
+                fetchRtDrafts();
+                fetchRtDraftsSummary();
+            })
+            .catch(error => {
+                console.error('Error approving draft:', error);
+                showToast('A network error occurred.', 'danger');
+                button.disabled = false;
+                button.innerHTML = original;
+            });
+    }
+
+    document.getElementById('confirm-reject-draft-btn').addEventListener('click', () => {
+        if (!currentReviewDraftId) return;
+        const reason = document.getElementById('reject-draft-reason').value.trim();
+        const draftId = currentReviewDraftId;
+        fetch(`${API_BASE}/rt/drafts/${draftId}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || null }),
+        })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('rejectDraftModal')).hide();
+                if (status === 200) {
+                    showToast('Draft rejected.', 'success');
+                    if (currentReviewDraftId === draftId) loadReviewDraft(draftId);
+                    fetchRtDrafts();
+                    fetchRtDraftsSummary();
+                } else {
+                    showToast(data.error || 'Could not reject draft.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error rejecting draft:', error);
+                showToast('A network error occurred.', 'danger');
+            });
+    });
+
+    document.getElementById('stat-tile-rt-drafts').addEventListener('click', () => switchToTab('tab-rt-drafts'));
+
     // --- Vulnerability checker ---
     const STATUS_LABELS = { vulnerable: 'Vulnerable', not_affected: 'Not Affected', unknown: 'Unknown' };
     const STATUS_ICONS = {
@@ -2453,6 +3153,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         fetchKevCves();
                         fetchAnalytics();
                         fetchScanHistory();
+                        fetchAction1Exposure();
+                        fetchAction1Status();
+                        fetchRtDrafts();
+                        fetchRtDraftsSummary();
                     }
                 }
                 wasRunning = data.running;
@@ -2494,6 +3198,7 @@ document.addEventListener('DOMContentLoaded', function () {
     wireViewToggle('vendors-view-toggle', 'vendors-card-view', 'vendors-table-view');
     wireViewToggle('products-view-toggle', 'products-card-view', 'products-table-view');
     wireViewToggle('sources-view-toggle', 'sources-card-view', 'sources-table-view');
+    wireViewToggle('asset-exposure-view-toggle', 'asset-exposure-card-view', 'asset-exposure-table-view');
 
     // Initial data load
     switchToTab(pageIdFromHash(), { skipHash: true });
@@ -2509,6 +3214,10 @@ document.addEventListener('DOMContentLoaded', function () {
     fetchAnalytics();
     fetchScanHistory();
     fetchSettings();
+    fetchAction1Status();
+    fetchAction1Exposure();
+    fetchRtDraftsSummary();
+    fetchRtDrafts();
     setDynamicFooter();
     pollPipelineStatus(); // reflect status immediately (e.g. a run already in progress)
 

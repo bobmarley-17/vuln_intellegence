@@ -24,9 +24,11 @@ from config import Config
 from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.extractor import CVE_PATTERN
-from modules.models import AffectedProduct, EnrichedCVE
-from modules.normalizer import product_version_affected
+from modules.models import EnrichedCVE
+from modules.normalizer import match_cve_to_product
 from modules.pipeline import Pipeline
+from modules.rt_drafts import create_draft_for_cve
+from modules import rt_drafts
 from modules.source_parsers import DEFAULT_SOURCE_TYPE, SOURCE_TYPES, test_connection as test_source_connection
 
 logger = logging.getLogger("vuln_intel.dashboard")
@@ -412,6 +414,8 @@ def create_app(config: Config, debug: bool = False) -> Flask:
                 "cache_ttl_hours": config.cache_ttl_hours,
                 "nvd_api_key_configured": bool(config.nvd_api_key),
                 "nvd_rate_limit_delay_seconds": config.nvd_rate_limit_delay,
+                "action1_configured": config.action1_configured,
+                "rt_configured": config.rt_configured,
                 "urls_file": config.urls_file,
                 "output_folder": config.output_folder,
                 "cache_folder": config.cache_folder,
@@ -448,36 +452,10 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         cves = cache.get_all_cves()
         results = []
         for cve in cves:
-            candidates = cve.affected_products or (
-                [AffectedProduct(vendor=cve.vendor or "", product=cve.product)] if cve.product else []
-            )
-            match = next(
-                (
-                    ap
-                    for ap in candidates
-                    if product.lower() in (ap.product or "").lower()
-                    and (not vendor or vendor.lower() in (ap.vendor or "").lower())
-                ),
-                None,
-            )
+            match = match_cve_to_product(cve, vendor, product, version)
             if match is None:
                 continue
-
-            if version and match.affected_range:
-                status = "vulnerable" if product_version_affected(match.affected_range, version) else "not_affected"
-            else:
-                status = "unknown"
-
-            results.append(
-                {
-                    "cve": _serialize(cve),
-                    "matched_vendor": match.vendor,
-                    "matched_product": match.product,
-                    "affected_range": match.affected_range,
-                    "fixed_version": match.fixed_version,
-                    "version_status": status,
-                }
-            )
+            results.append({"cve": _serialize(cve), **match})
 
         results.sort(key=lambda r: r["cve"]["risk_score"] or 0, reverse=True)
         return jsonify(
@@ -736,6 +714,158 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         result = test_source_connection(url, source_type, timeout=config.request_timeout, user_agent=config.user_agent)
         return jsonify(result)
 
+    @app.route("/api/action1/status")
+    def api_action1_status():
+        return jsonify({"configured": config.action1_configured, **cache.get_action1_sync_status()})
+
+    @app.route("/api/action1/sync", methods=["POST"])
+    def api_action1_sync():
+        if not config.action1_configured:
+            return jsonify({"error": "Action1 is not configured. Set ACTION1_CLIENT_ID/SECRET/ORG_ID."}), 400
+        started = runner.start(
+            "Action1 inventory sync",
+            lambda: runner.pipeline.action1.sync_inventory(cache),
+            wait_if_busy=False,
+        )
+        if not started:
+            return jsonify({"error": "A scan or pipeline job is already running"}), 409
+        return jsonify({"message": "Action1 sync started"}), 202
+
+    @app.route("/api/action1/exposure")
+    def api_action1_exposure():
+        """Every cached Action1 exposure row, enriched with each CVE's risk
+        info so the Asset Exposure page can sort/badge by severity."""
+        exposures = cache.get_all_action1_exposures()
+        cve_lookup = {}
+        draft_status_map = cache.get_rt_draft_status_map()
+        results = []
+        for row in exposures:
+            cve = cve_lookup.get(row["cve_id"])
+            if cve is None and row["cve_id"] not in cve_lookup:
+                cve = cache.get_cve(row["cve_id"])
+                cve_lookup[row["cve_id"]] = cve
+            draft = draft_status_map.get(row["cve_id"])
+            results.append(
+                {
+                    **row,
+                    "risk_score": cve.risk_score if cve else None,
+                    "risk_level": cve.risk_level if cve else None,
+                    "kev_listed": cve.kev_listed if cve else False,
+                    "rt_draft_id": draft["draft_id"] if draft else None,
+                    "rt_draft_status": draft["status"] if draft else None,
+                    "rt_ticket_id": draft["rt_ticket_id"] if draft else None,
+                }
+            )
+        results.sort(key=lambda r: r["risk_score"] or 0, reverse=True)
+        return jsonify(
+            {
+                "total": len(results),
+                "vulnerable_count": sum(1 for r in results if r["version_status"] == "vulnerable"),
+                "results": results,
+            }
+        )
+
+    @app.route("/api/rt/cve/<cve_id>/tickets")
+    def api_rt_cve_tickets(cve_id):
+        """Live-searches RT (rather than the local rt_tickets dedup table)
+        so this reflects tickets a human filed directly in RT too, not just
+        ones the pipeline auto-created."""
+        cve_id = cve_id.strip().upper()
+        if not config.rt_configured:
+            return jsonify({"configured": False, "tickets": []})
+        if not CVE_PATTERN.fullmatch(cve_id):
+            return jsonify({"error": f"'{cve_id}' is not a valid CVE ID."}), 400
+        try:
+            tickets = runner.pipeline.rt.search_tickets_for_cve(cve_id)
+        except Exception as exc:
+            logger.exception("RT search failed for %s", cve_id)
+            return jsonify({"configured": True, "error": str(exc), "tickets": []})
+        return jsonify({"configured": True, "tickets": tickets})
+
+    @app.route("/api/rt/cve/<cve_id>/draft")
+    def api_rt_cve_draft(cve_id):
+        cve_id = cve_id.strip().upper()
+        draft = _draft_with_ticket_url(cache.get_rt_draft_for_cve(cve_id), config.rt_url)
+        return jsonify({"configured": config.rt_configured, "draft": draft})
+
+    @app.route("/api/rt/drafts/summary")
+    def api_rt_drafts_summary():
+        return jsonify({"configured": config.rt_configured, **cache.get_rt_draft_summary()})
+
+    @app.route("/api/rt/drafts")
+    def api_rt_drafts_list():
+        status = request.args.get("status") or None
+        drafts = [_draft_with_ticket_url(d, config.rt_url) for d in cache.get_all_rt_drafts(status)]
+        return jsonify({"drafts": drafts})
+
+    @app.route("/api/rt/drafts", methods=["POST"])
+    def api_rt_create_draft():
+        """Manual 'Create Ticket Draft' action from the CVE modal / Asset
+        Exposure -- bypasses the KEV/Critical auto-trigger since this is an
+        explicit analyst request, but still only ever creates a *draft*."""
+        if not config.rt_configured:
+            return jsonify({"error": "Request Tracker is not configured. Set RT_URL/RT_USERNAME/RT_PASSWORD."}), 400
+        data = request.get_json(silent=True) or {}
+        cve_id = str(data.get("cve_id", "")).strip().upper()
+        cve = cache.get_cve(cve_id)
+        if cve is None:
+            return jsonify({"error": f"{cve_id} is not a known CVE."}), 404
+        try:
+            draft_id = create_draft_for_cve(cve, cache, runner.pipeline.rt, force=True)
+        except Exception as exc:
+            logger.exception("RT draft creation failed for %s", cve_id)
+            return jsonify({"error": f"Could not create draft: {exc}"}), 502
+        if draft_id is None:
+            return jsonify({"error": f"A draft already exists for {cve_id}."}), 409
+        return jsonify(_draft_with_ticket_url(cache.get_rt_draft(draft_id), config.rt_url)), 201
+
+    @app.route("/api/rt/drafts/<int:draft_id>")
+    def api_rt_draft_detail(draft_id):
+        draft = cache.get_rt_draft(draft_id)
+        if draft is None:
+            return jsonify({"error": "Draft not found"}), 404
+        return jsonify({**_draft_with_ticket_url(draft, config.rt_url), "audit": cache.get_rt_draft_audit(draft_id)})
+
+    @app.route("/api/rt/drafts/<int:draft_id>", methods=["PUT"])
+    def api_rt_draft_update(draft_id):
+        if cache.get_rt_draft(draft_id) is None:
+            return jsonify({"error": "Draft not found"}), 404
+        data = request.get_json(silent=True) or {}
+        rt_drafts.update_draft(
+            draft_id,
+            cache,
+            current_user.username,
+            proposed_subject=data.get("subject"),
+            proposed_body=data.get("body"),
+            proposed_queue=data.get("queue"),
+            proposed_priority=data.get("priority"),
+            proposed_owner=data.get("owner"),
+        )
+        return jsonify(_draft_with_ticket_url(cache.get_rt_draft(draft_id), config.rt_url))
+
+    @app.route("/api/rt/drafts/<int:draft_id>/approve", methods=["POST"])
+    def api_rt_draft_approve(draft_id):
+        if not config.rt_configured:
+            return jsonify({"error": "Request Tracker is not configured."}), 400
+        try:
+            result = rt_drafts.approve_draft(draft_id, cache, runner.pipeline.rt, current_user.username)
+        except rt_drafts.RTDraftError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            logger.exception("RT ticket creation failed for draft %s", draft_id)
+            return jsonify({"error": f"Could not create RT ticket: {exc}", "draft": cache.get_rt_draft(draft_id)}), 502
+        return jsonify(result)
+
+    @app.route("/api/rt/drafts/<int:draft_id>/reject", methods=["POST"])
+    def api_rt_draft_reject(draft_id):
+        data = request.get_json(silent=True) or {}
+        reason = data.get("reason")
+        try:
+            rt_drafts.reject_draft(draft_id, cache, current_user.username, reason)
+        except rt_drafts.RTDraftError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(cache.get_rt_draft(draft_id))
+
     @app.route("/api/pipeline/status")
     def api_pipeline_status():
         return jsonify(runner.status())
@@ -846,6 +976,12 @@ def _apply_sort(cves: list[EnrichedCVE], sort_by: str, sort_dir: str) -> list[En
     }
     key_func = key_funcs.get(sort_by, key_funcs["risk_score"])
     return sorted(cves, key=key_func, reverse=reverse)
+
+
+def _draft_with_ticket_url(draft: dict | None, rt_url: str | None) -> dict | None:
+    if draft is None or not draft.get("rt_ticket_id") or not rt_url:
+        return draft
+    return {**draft, "rt_ticket_url": f"{rt_url.rstrip('/')}/Ticket/Display.html?id={draft['rt_ticket_id']}"}
 
 
 def _serialize(cve: EnrichedCVE) -> dict:

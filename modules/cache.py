@@ -76,9 +76,98 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS action1_endpoints (
+    id TEXT PRIMARY KEY,
+    hostname TEXT,
+    os TEXT,
+    org_id TEXT,
+    raw_json TEXT,
+    synced_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS action1_software (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint_id TEXT NOT NULL,
+    vendor TEXT,
+    product TEXT,
+    version TEXT,
+    FOREIGN KEY (endpoint_id) REFERENCES action1_endpoints(id)
+);
+
+CREATE TABLE IF NOT EXISTS action1_exposures (
+    cve_id TEXT NOT NULL,
+    endpoint_id TEXT NOT NULL,
+    hostname TEXT,
+    vendor TEXT,
+    product TEXT,
+    installed_version TEXT,
+    affected_range TEXT,
+    fixed_version TEXT,
+    version_status TEXT,
+    detected_at TEXT NOT NULL,
+    PRIMARY KEY (cve_id, endpoint_id, product)
+);
+
+CREATE TABLE IF NOT EXISTS rt_tickets (
+    cve_id TEXT NOT NULL,
+    ticket_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (cve_id, ticket_id)
+);
+
+CREATE TABLE IF NOT EXISTS rt_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cve_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Pending Approval',
+    trigger_reason TEXT,
+    ticket_origin TEXT,
+
+    severity TEXT,
+    cvss_score REAL,
+    epss_score REAL,
+    kev_listed INTEGER NOT NULL DEFAULT 0,
+    vendor TEXT,
+    product TEXT,
+    affected_endpoint_count INTEGER,
+    description TEXT,
+    recommendation TEXT,
+    source_articles TEXT,
+
+    proposed_queue TEXT NOT NULL,
+    proposed_priority TEXT,
+    proposed_owner TEXT,
+    proposed_subject TEXT NOT NULL,
+    proposed_body TEXT NOT NULL,
+
+    rt_ticket_id INTEGER,
+    rejection_reason TEXT,
+    failure_reason TEXT,
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (status IN ('Draft','Pending Approval','Approved','Created','Rejected','Cancelled','Creation Failed'))
+);
+
+CREATE TABLE IF NOT EXISTS rt_draft_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (draft_id) REFERENCES rt_drafts(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_article_cves_cve ON article_cves(cve_id);
 CREATE INDEX IF NOT EXISTS idx_source_urls_status ON source_urls(status);
 CREATE INDEX IF NOT EXISTS idx_scan_history_source ON scan_history(source_id);
+CREATE INDEX IF NOT EXISTS idx_action1_software_endpoint ON action1_software(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_action1_exposures_cve ON action1_exposures(cve_id);
+CREATE INDEX IF NOT EXISTS idx_rt_tickets_cve ON rt_tickets(cve_id);
+CREATE INDEX IF NOT EXISTS idx_rt_drafts_cve ON rt_drafts(cve_id);
+CREATE INDEX IF NOT EXISTS idx_rt_drafts_status ON rt_drafts(status);
+CREATE INDEX IF NOT EXISTS idx_rt_draft_audit_draft ON rt_draft_audit(draft_id);
 """
 
 # Columns added after the original source_urls table shipped. Added via
@@ -506,3 +595,267 @@ class VulnCache:
         d = d.copy()
         d["affected_products"] = [AffectedProduct(**ap) for ap in d.get("affected_products", [])]
         return EnrichedCVE(**d)
+
+    # ------------------------------------------------------------------
+    # Action1 integration
+    # ------------------------------------------------------------------
+    def replace_action1_inventory(self, endpoints: list[dict], software: list[dict]) -> None:
+        """Full-replace the cached Action1 inventory snapshot with the
+        result of a fresh sync. The inventory is small enough (endpoints +
+        installed software for one org) that a full replace is simpler and
+        cheaper than diffing, and guarantees stale/removed endpoints and
+        software don't linger."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM action1_software")
+            conn.execute("DELETE FROM action1_endpoints")
+            for ep in endpoints:
+                conn.execute(
+                    """
+                    INSERT INTO action1_endpoints (id, hostname, os, org_id, raw_json, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (ep["id"], ep.get("hostname"), ep.get("os"), ep.get("org_id"), ep.get("raw_json"), now),
+                )
+            for sw in software:
+                conn.execute(
+                    """
+                    INSERT INTO action1_software (endpoint_id, vendor, product, version)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (sw["endpoint_id"], sw.get("vendor"), sw.get("product"), sw.get("version")),
+                )
+
+    def get_action1_software(self) -> list[dict]:
+        """Every cached (endpoint, installed software) row, joined with the
+        endpoint's hostname for display/matching."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.id, s.endpoint_id, s.vendor, s.product, s.version, e.hostname
+                FROM action1_software s
+                JOIN action1_endpoints e ON e.id = s.endpoint_id
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def replace_action1_exposures(self, cve_id: str, exposures: list[dict]) -> None:
+        """Replace this CVE's exposure rows with a freshly computed set
+        (called every time the CVE is re-enriched against the current
+        inventory snapshot)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM action1_exposures WHERE cve_id = ?", (cve_id,))
+            for exp in exposures:
+                conn.execute(
+                    """
+                    INSERT INTO action1_exposures
+                        (cve_id, endpoint_id, hostname, vendor, product, installed_version,
+                         affected_range, fixed_version, version_status, detected_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cve_id,
+                        exp["endpoint_id"],
+                        exp.get("hostname"),
+                        exp.get("vendor"),
+                        exp.get("product"),
+                        exp.get("installed_version"),
+                        exp.get("affected_range"),
+                        exp.get("fixed_version"),
+                        exp.get("version_status"),
+                        now,
+                    ),
+                )
+
+    def get_all_action1_exposures(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM action1_exposures ORDER BY cve_id").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_action1_sync_status(self) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS endpoint_count, MAX(synced_at) AS last_synced_at FROM action1_endpoints"
+            ).fetchone()
+            software_count = conn.execute("SELECT COUNT(*) AS n FROM action1_software").fetchone()["n"]
+        return {
+            "endpoint_count": row["endpoint_count"],
+            "software_count": software_count,
+            "last_synced_at": row["last_synced_at"],
+        }
+
+    # ------------------------------------------------------------------
+    # Request Tracker integration
+    # ------------------------------------------------------------------
+    def record_rt_ticket(self, cve_id: str, ticket_id: int, source: str) -> None:
+        """Records that a ticket now exists for this CVE. Purely a local
+        dedup/badge guard -- RT itself stays the source of truth for ticket
+        content and status."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO rt_tickets (cve_id, ticket_id, source, created_at) VALUES (?, ?, ?, ?)",
+                (cve_id, ticket_id, source, now),
+            )
+
+    def has_rt_ticket(self, cve_id: str) -> bool:
+        """Whether a ticket has already been recorded for this CVE -- guards
+        the pipeline against opening a duplicate ticket every time a still-
+        Critical/KEV CVE's cache entry expires and gets re-enriched."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM rt_tickets WHERE cve_id = ? LIMIT 1", (cve_id,)).fetchone()
+        return row is not None
+
+    def get_rt_ticket_cve_ids(self) -> set[str]:
+        """Every CVE ID that already has at least one recorded ticket, for
+        bulk 'already ticketed' badges (e.g. Asset Exposure) without a
+        per-row query."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT DISTINCT cve_id FROM rt_tickets").fetchall()
+        return {r["cve_id"] for r in rows}
+
+    # ------------------------------------------------------------------
+    # RT ticket drafts (draft -> review -> approve workflow)
+    # ------------------------------------------------------------------
+    def create_rt_draft(
+        self,
+        cve_id: str,
+        status: str,
+        trigger_reason: str | None,
+        ticket_origin: str | None,
+        severity: str | None,
+        cvss_score: float | None,
+        epss_score: float | None,
+        kev_listed: bool,
+        vendor: str | None,
+        product: str | None,
+        affected_endpoint_count: int | None,
+        description: str | None,
+        recommendation: str | None,
+        source_articles: list[str],
+        proposed_queue: str,
+        proposed_priority: str | None,
+        proposed_owner: str | None,
+        proposed_subject: str,
+        proposed_body: str,
+        rt_ticket_id: int | None = None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO rt_drafts (
+                    cve_id, status, trigger_reason, ticket_origin,
+                    severity, cvss_score, epss_score, kev_listed, vendor, product,
+                    affected_endpoint_count, description, recommendation, source_articles,
+                    proposed_queue, proposed_priority, proposed_owner, proposed_subject, proposed_body,
+                    rt_ticket_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cve_id, status, trigger_reason, ticket_origin,
+                    severity, cvss_score, epss_score, int(kev_listed), vendor, product,
+                    affected_endpoint_count, description, recommendation, json.dumps(source_articles),
+                    proposed_queue, proposed_priority, proposed_owner, proposed_subject, proposed_body,
+                    rt_ticket_id, now, now,
+                ),
+            )
+            return cursor.lastrowid
+
+    _UPDATABLE_RT_DRAFT_FIELDS = {
+        "status", "proposed_queue", "proposed_priority", "proposed_owner",
+        "proposed_subject", "proposed_body", "rt_ticket_id", "rejection_reason",
+        "failure_reason", "ticket_origin",
+    }
+
+    def update_rt_draft(self, draft_id: int, **fields) -> bool:
+        """Partial update -- only keys present in `fields` are touched.
+        Used both for analyst edits (proposed_*) and status transitions
+        (status/rt_ticket_id/rejection_reason/failure_reason)."""
+        updates = {k: v for k, v in fields.items() if k in self._UPDATABLE_RT_DRAFT_FIELDS}
+        if not updates:
+            return False
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{column} = ?" for column in updates)
+        params = [*updates.values(), draft_id]
+        with self._connect() as conn:
+            cursor = conn.execute(f"UPDATE rt_drafts SET {set_clause} WHERE id = ?", params)
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _rt_draft_row_to_dict(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["kev_listed"] = bool(d["kev_listed"])
+        try:
+            d["source_articles"] = json.loads(d["source_articles"]) if d["source_articles"] else []
+        except json.JSONDecodeError:
+            d["source_articles"] = []
+        return d
+
+    def get_rt_draft(self, draft_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM rt_drafts WHERE id = ?", (draft_id,)).fetchone()
+        return self._rt_draft_row_to_dict(row) if row is not None else None
+
+    def get_rt_draft_for_cve(self, cve_id: str) -> dict | None:
+        """The most recent draft for this CVE, if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM rt_drafts WHERE cve_id = ? ORDER BY created_at DESC LIMIT 1", (cve_id,)
+            ).fetchone()
+        return self._rt_draft_row_to_dict(row) if row is not None else None
+
+    def get_all_rt_drafts(self, status: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM rt_drafts WHERE status = ? ORDER BY created_at DESC", (status,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM rt_drafts ORDER BY created_at DESC").fetchall()
+        return [self._rt_draft_row_to_dict(r) for r in rows]
+
+    def get_rt_draft_status_map(self) -> dict[str, dict]:
+        """cve_id -> {id, status, rt_ticket_id} for the most recent draft of
+        each CVE, for bulk badges (Asset Exposure, drafts summary) without a
+        per-row query."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT cve_id, id, status, rt_ticket_id FROM rt_drafts ORDER BY created_at DESC"
+            ).fetchall()
+        status_map: dict[str, dict] = {}
+        for row in rows:
+            status_map.setdefault(
+                row["cve_id"], {"draft_id": row["id"], "status": row["status"], "rt_ticket_id": row["rt_ticket_id"]}
+            )
+        return status_map
+
+    def get_rt_draft_summary(self) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status = 'Pending Approval' THEN 1 ELSE 0 END), 0) AS pending,
+                    COALESCE(SUM(CASE WHEN status = 'Pending Approval' AND severity = 'Critical' THEN 1 ELSE 0 END), 0) AS critical_pending,
+                    COALESCE(SUM(CASE WHEN status = 'Pending Approval' AND kev_listed = 1 THEN 1 ELSE 0 END), 0) AS kev_pending,
+                    COALESCE(SUM(CASE WHEN status = 'Created' THEN 1 ELSE 0 END), 0) AS created
+                FROM rt_drafts
+                """
+            ).fetchone()
+        return dict(row)
+
+    def record_rt_draft_audit(self, draft_id: int, event: str, actor: str, detail: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO rt_draft_audit (draft_id, event, actor, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+                (draft_id, event, actor, detail, now),
+            )
+
+    def get_rt_draft_audit(self, draft_id: int) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM rt_draft_audit WHERE draft_id = ? ORDER BY created_at ASC", (draft_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]

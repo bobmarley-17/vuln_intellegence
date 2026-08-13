@@ -34,6 +34,9 @@
                 <button type="button" class="sidebar-link" data-target="tab-kev" data-title="KEV Catalog" data-section="Vulnerability Intelligence">
                     <i class="bi bi-exclamation-triangle-fill"></i><span class="sidebar-link-label">KEV Catalog</span>
                 </button>
+                <button type="button" class="sidebar-link" data-target="tab-rt-drafts" data-title="RT Ticket Drafts" data-section="Vulnerability Intelligence">
+                    <i class="bi bi-file-earmark-text"></i><span class="sidebar-link-label">RT Ticket Drafts</span>
+                </button>
 
                 <div class="sidebar-section-label">Asset Intelligence</div>
                 <button type="button" class="sidebar-link" data-target="tab-vendors" data-title="Vendors" data-section="Asset Intelligence">
@@ -41,6 +44,9 @@
                 </button>
                 <button type="button" class="sidebar-link" data-target="tab-products" data-title="Products" data-section="Asset Intelligence">
                     <i class="bi bi-box-seam"></i><span class="sidebar-link-label">Products</span>
+                </button>
+                <button type="button" class="sidebar-link" data-target="tab-asset-exposure" data-title="Asset Exposure" data-section="Asset Intelligence">
+                    <i class="bi bi-hdd-network"></i><span class="sidebar-link-label">Asset Exposure</span>
                 </button>
 
                 <div class="sidebar-section-label">Collection</div>
@@ -172,6 +178,14 @@
                             <div id="product-count" class="value">&hellip;</div>
                             <div class="label">Products Tracked</div>
                             <div class="trend" id="trend-products">&nbsp;</div>
+                        </div>
+                        <div class="stat-tile stat-tile-clickable" id="stat-tile-rt-drafts" role="button" tabindex="0" title="Review RT ticket drafts">
+                            <div class="stat-tile-top">
+                                <div class="stat-icon stat-icon-critical"><i class="bi bi-file-earmark-text"></i></div>
+                            </div>
+                            <div id="rt-drafts-pending-count" class="value">&hellip;</div>
+                            <div class="label">RT Ticket Drafts Pending</div>
+                            <div class="trend" id="trend-rt-drafts">&nbsp;</div>
                         </div>
                     </div>
 
@@ -566,6 +580,125 @@
                     </div>
                 </div>
 
+                <!-- Asset Exposure page -->
+                <div class="app-page" id="tab-asset-exposure">
+                    <div class="section-header">
+                        <div>
+                            <h2>Asset Exposure</h2>
+                            <div class="section-subtitle" id="asset-exposure-summary-line">Action1-managed endpoints running software affected by a tracked CVE.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="asset-exposure-search" placeholder="Search CVE, host, product..." style="width: 220px;">
+                            <div class="view-toggle" id="asset-exposure-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="asset-exposure-export-btn"><i class="bi bi-download"></i> Export CSV</button>
+                            <button type="button" class="btn btn-primary btn-sm" id="asset-exposure-sync-btn"><i class="bi bi-arrow-repeat"></i> Sync Action1 Inventory</button>
+                        </div>
+                    </div>
+                    <div class="section-subtitle mb-3" id="asset-exposure-sync-status">&hellip;</div>
+
+                    <div id="asset-exposure-not-configured" class="app-empty-state d-none">
+                        <i class="bi bi-plug"></i>
+                        <p>Action1 isn't configured yet.</p>
+                        <p class="text-muted small">Set <code>ACTION1_CLIENT_ID</code>, <code>ACTION1_CLIENT_SECRET</code> and <code>ACTION1_ORG_ID</code> in your environment, then restart the app. See the Settings page for current status.</p>
+                    </div>
+
+                    <div id="asset-exposure-content" class="d-none">
+                        <div id="asset-exposure-card-view" class="card-grid"></div>
+
+                        <div id="asset-exposure-table-view" class="card app-card d-none">
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover app-table" id="assetExposureTable">
+                                        <thead>
+                                            <tr>
+                                                <th data-sort="cve_id">CVE <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="risk_level">Severity <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="kev_listed">KEV <span class="sort-icon">&#x2195;</span></th>
+                                                <th data-sort="hostname">Endpoint <span class="sort-icon">&#x2195;</span></th>
+                                                <th data-sort="product">Product <span class="sort-icon">&#x2195;</span></th>
+                                                <th data-sort="installed_version">Installed Version <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="version_status">Status <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center">Ticket</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="asset-exposure-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="asset-exposure-empty-state" class="app-empty-state d-none">
+                            <i class="bi bi-hdd-network"></i>
+                            <p>No exposure found. Either nothing synced yet, or none of your Action1 inventory matches a tracked CVE.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RT Ticket Drafts page -->
+                <div class="app-page" id="tab-rt-drafts">
+                    <div class="section-header">
+                        <div>
+                            <h2>RT Ticket Drafts</h2>
+                            <div class="section-subtitle" id="rt-drafts-summary-line">Ticket drafts for Critical/KEV CVEs, awaiting analyst review. Vuln Intel never creates an RT ticket without approval.</div>
+                        </div>
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <input type="text" class="form-control form-control-sm" id="rt-drafts-search" placeholder="Search CVE..." style="width: 200px;">
+                            <select class="form-select form-select-sm" id="rt-drafts-status-filter" style="width: 180px;">
+                                <option value="">All Statuses</option>
+                                <option value="Pending Approval">Pending Approval</option>
+                                <option value="Created">Created</option>
+                                <option value="Rejected">Rejected</option>
+                                <option value="Creation Failed">Creation Failed</option>
+                                <option value="Cancelled">Cancelled</option>
+                            </select>
+                            <div class="view-toggle" id="rt-drafts-view-toggle">
+                                <button type="button" data-view="card" class="active"><i class="bi bi-grid-3x3-gap-fill"></i> Cards</button>
+                                <button type="button" data-view="table"><i class="bi bi-list-ul"></i> Table</button>
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="rt-drafts-export-btn"><i class="bi bi-download"></i> Export CSV</button>
+                        </div>
+                    </div>
+
+                    <div id="rt-drafts-not-configured" class="app-empty-state d-none">
+                        <i class="bi bi-plug"></i>
+                        <p>Request Tracker isn't configured yet.</p>
+                        <p class="text-muted small">Set <code>RT_URL</code>, <code>RT_USERNAME</code> and <code>RT_PASSWORD</code> in your environment, then restart the app.</p>
+                    </div>
+
+                    <div id="rt-drafts-content">
+                        <div id="rt-drafts-card-view" class="card-grid"></div>
+
+                        <div id="rt-drafts-table-view" class="card app-card d-none">
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover app-table" id="rtDraftsTable">
+                                        <thead>
+                                            <tr>
+                                                <th data-sort="cve_id">CVE <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="severity">Severity <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="kev_listed">KEV <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="affected_endpoint_count">Affected <span class="sort-icon">&#x2195;</span></th>
+                                                <th data-sort="rt_ticket_id">Ticket <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center" data-sort="status">Status <span class="sort-icon">&#x2195;</span></th>
+                                                <th class="text-center">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rt-drafts-table-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="rt-drafts-empty-state" class="app-empty-state d-none">
+                            <i class="bi bi-file-earmark-text"></i>
+                            <p>No RT ticket drafts yet. They're generated automatically for Critical/KEV CVEs.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Sources page -->
                 <div class="app-page" id="tab-sources">
                     <div class="section-header">
@@ -689,6 +822,16 @@
                                         <h6>NVD</h6>
                                         <div class="settings-row"><span class="settings-row-label">API key configured</span><span class="settings-row-value" id="setting-nvd-key">&hellip;</span></div>
                                         <div class="settings-row"><span class="settings-row-label">Rate limit delay</span><span class="settings-row-value" id="setting-nvd-delay">&hellip;</span></div>
+                                    </div>
+                                    <div class="settings-group">
+                                        <h6>Action1</h6>
+                                        <div class="settings-row"><span class="settings-row-label">Configured</span><span class="settings-row-value" id="setting-action1-configured">&hellip;</span></div>
+                                        <p class="text-muted small mb-0">Set <code>ACTION1_CLIENT_ID</code>, <code>ACTION1_CLIENT_SECRET</code> and <code>ACTION1_ORG_ID</code> to enable the Asset Exposure page.</p>
+                                    </div>
+                                    <div class="settings-group">
+                                        <h6>Request Tracker</h6>
+                                        <div class="settings-row"><span class="settings-row-label">Configured</span><span class="settings-row-value" id="setting-rt-configured">&hellip;</span></div>
+                                        <p class="text-muted small mb-0">Set <code>RT_URL</code>, <code>RT_USERNAME</code> and <code>RT_PASSWORD</code> to enable ticket auto-creation and lookup.</p>
                                     </div>
                                     <div class="settings-group">
                                         <h6>Storage</h6>
@@ -942,6 +1085,42 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-danger" id="confirm-delete-source-btn">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Review RT Ticket Draft Modal -->
+    <div class="modal fade" id="reviewDraftModal" tabindex="-1" aria-labelledby="reviewDraftModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="reviewDraftModalLabel">Review RT Ticket Draft</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="review-draft-body">
+                    <span class="text-muted small">Loading&hellip;</span>
+                </div>
+                <div class="modal-footer" id="review-draft-footer"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reject Draft Confirmation Modal -->
+    <div class="modal fade" id="rejectDraftModal" tabindex="-1" aria-labelledby="rejectDraftModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="rejectDraftModalLabel">Reject Ticket Draft</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label for="reject-draft-reason" class="form-label">Reason <span class="text-muted">(optional)</span></label>
+                    <textarea class="form-control" id="reject-draft-reason" rows="3" placeholder="e.g. Not applicable to our environment"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirm-reject-draft-btn">Reject</button>
                 </div>
             </div>
         </div>

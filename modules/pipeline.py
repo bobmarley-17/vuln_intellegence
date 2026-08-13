@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from config import Config
+from modules.action1 import Action1Client
 from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.epss import EPSSClient
@@ -23,6 +24,8 @@ from modules.mitre import MitreClient
 from modules.models import Article, EnrichedCVE
 from modules.nvd import NVDClient
 from modules.risk import RiskScorer
+from modules.rt import RTClient
+from modules.rt_drafts import create_draft_for_cve
 from modules.source_parsers import SourceFetcher
 from modules.summarizer import TemplateSummarizer
 from modules.vendors import VendorIdentifier
@@ -51,6 +54,32 @@ class Pipeline:
         self.mitre = MitreClient(config.request_timeout, config.max_retries, config.backoff_factor)
         self.epss = EPSSClient(config.request_timeout, config.max_retries, config.backoff_factor)
         self.kev = KEVClient(config.cache_folder, config.request_timeout, config.max_retries, config.backoff_factor)
+        self.action1 = (
+            Action1Client(
+                client_id=config.action1_client_id,
+                client_secret=config.action1_client_secret,
+                org_id=config.action1_org_id,
+                base_url=config.action1_base_url,
+                timeout=config.request_timeout,
+                max_retries=config.max_retries,
+                backoff_factor=config.backoff_factor,
+            )
+            if config.action1_configured
+            else None
+        )
+        self.rt = (
+            RTClient(
+                url=config.rt_url,
+                username=config.rt_username,
+                password=config.rt_password,
+                queue=config.rt_queue,
+                timeout=config.request_timeout,
+                max_retries=config.max_retries,
+                backoff_factor=config.backoff_factor,
+            )
+            if config.rt_configured
+            else None
+        )
         self.vendor_identifier = VendorIdentifier()
         self.summarizer = TemplateSummarizer()
         self.risk_scorer = RiskScorer()
@@ -230,7 +259,19 @@ class Pipeline:
         self.epss.enrich(cve_id, cve)
         self.kev.enrich(cve_id, cve)
         self.vendor_identifier.enrich(cve, configurations)
+        if self.action1:
+            self.action1.match_exposure(cve, self.cache)
 
         cve.summary = self.summarizer.summarize(cve)
         self.risk_scorer.score(cve)
+
+        if self.rt and (cve.kev_listed or cve.risk_level == "Critical") and not self.cache.get_rt_draft_for_cve(cve.cve_id):
+            # Never creates a real RT ticket here -- only a local draft an
+            # analyst must review and approve (see modules.rt_drafts).
+            try:
+                create_draft_for_cve(cve, self.cache, self.rt)
+            except Exception:
+                # An RT outage must never block CVE enrichment -- log and move on.
+                logger.exception("Failed to create RT draft for %s", cve.cve_id)
+
         return cve

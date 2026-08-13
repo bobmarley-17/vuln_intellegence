@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 
-from modules.models import AffectedProduct
+from modules.models import AffectedProduct, EnrichedCVE
 
 logger = logging.getLogger("vuln_intel.normalizer")
 
@@ -246,6 +246,43 @@ def _product_label(p: AffectedProduct) -> str:
     if p.product.lower().startswith(p.vendor.lower()):
         return p.product
     return f"{p.vendor} {p.product}"
+
+
+def match_cve_to_product(cve: EnrichedCVE, vendor: str, product: str, version: str | None) -> dict | None:
+    """Check whether `cve` affects the given vendor/product(/version),
+    matching the same loose substring rule the manual vulnerability checker
+    uses. Returns None if the CVE doesn't mention this product at all;
+    otherwise a dict with the matched row and a version verdict
+    ('vulnerable' if `version` falls in the matched affected range,
+    'not_affected' if it doesn't, or 'unknown' if no version was given or
+    the CVE has no range data to compare against)."""
+    candidates = cve.affected_products or (
+        [AffectedProduct(vendor=cve.vendor or "", product=cve.product)] if cve.product else []
+    )
+    match = next(
+        (
+            ap
+            for ap in candidates
+            if product.lower() in (ap.product or "").lower()
+            and (not vendor or vendor.lower() in (ap.vendor or "").lower())
+        ),
+        None,
+    )
+    if match is None:
+        return None
+
+    if version and match.affected_range:
+        status = "vulnerable" if product_version_affected(match.affected_range, version) else "not_affected"
+    else:
+        status = "unknown"
+
+    return {
+        "matched_vendor": match.vendor,
+        "matched_product": match.product,
+        "affected_range": match.affected_range,
+        "fixed_version": match.fixed_version,
+        "version_status": status,
+    }
 
 
 def summarize_affected_products(products: list[AffectedProduct]) -> tuple[str | None, str | None]:
