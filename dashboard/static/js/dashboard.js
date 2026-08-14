@@ -149,6 +149,103 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('nvd-discovery-view-btn').addEventListener('click', () => switchToTab('tab-sources'));
     }
 
+    // --- NVD Discovery dry-run preview ---
+    function openNvdPreviewModal() {
+        document.getElementById('nvd-preview-results').innerHTML = '<p class="text-muted small">Set a window and click Run Preview.</p>';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('nvdPreviewModal')).show();
+    }
+
+    function runNvdPreview() {
+        const days = Number(document.getElementById('nvd-preview-days').value) || 3;
+        const resultsEl = document.getElementById('nvd-preview-results');
+        const btn = document.getElementById('nvd-preview-run-btn');
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Running...';
+        resultsEl.innerHTML = '<p class="text-muted small">Querying NVD and evaluating candidates &mdash; this can take a while for a busy window.</p>';
+
+        fetch(`${API_BASE}/nvd-discovery/preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days }),
+        })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                if (status !== 200) {
+                    resultsEl.innerHTML = `<div class="alert alert-danger mb-0">${escapeHtml(data.error || 'Preview failed.')}</div>`;
+                    return;
+                }
+                renderNvdPreviewResults(data);
+            })
+            .catch(error => {
+                console.error('Error running NVD preview:', error);
+                resultsEl.innerHTML = '<div class="alert alert-danger mb-0">A network error occurred.</div>';
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            });
+    }
+
+    function renderNvdPreviewResults(data) {
+        const resultsEl = document.getElementById('nvd-preview-results');
+        const results = data.results || [];
+        const keptCount = results.filter(r => r.would_keep).length;
+
+        const summary = `
+            <p class="small mb-3">
+                Window: ${escapeHtml(new Date(data.window_start).toLocaleString())} &ndash; ${escapeHtml(new Date(data.window_end).toLocaleString())}<br>
+                ${data.total_candidates} candidate${data.total_candidates === 1 ? '' : 's'} found in NVD
+                ${data.truncated ? ` (showing first ${results.length})` : ''}, <strong>${keptCount}</strong> would be kept.
+            </p>
+        `;
+
+        if (results.length === 0) {
+            resultsEl.innerHTML = summary + '<p class="text-muted small">No candidates in this window.</p>';
+            return;
+        }
+
+        const rows = results.map(r => {
+            if (r.error) {
+                return `<tr><td>${escapeHtml(r.cve_id)}</td><td colspan="6" class="text-danger small">${escapeHtml(r.error)}</td></tr>`;
+            }
+            const keepBadge = r.would_keep
+                ? `<span class="badge bg-success">Keep &mdash; ${escapeHtml(r.reason)}</span>`
+                : '<span class="badge bg-secondary">Discard</span>';
+            const knownBadge = r.already_known
+                ? '<span class="badge bg-info text-dark">Already tracked</span>'
+                : (r.already_evaluated ? '<span class="badge bg-secondary">Already evaluated</span>' : '');
+            return `
+                <tr>
+                    <td><strong>${escapeHtml(r.cve_id)}</strong></td>
+                    <td>${escapeHtml(r.published_date ? new Date(r.published_date).toLocaleDateString() : 'N/A')}</td>
+                    <td class="text-center">${severityBadgeOrDash(r.severity)}</td>
+                    <td class="text-center">${r.cvss ?? 'N/A'}</td>
+                    <td class="text-center">${r.kev_listed ? '<span class="badge bg-danger">KEV</span>' : ''}</td>
+                    <td>${escapeHtml(r.vendor || '')} ${escapeHtml(r.product || '')}</td>
+                    <td>${keepBadge} ${knownBadge}</td>
+                </tr>
+            `;
+        }).join('');
+
+        resultsEl.innerHTML = `
+            ${summary}
+            <div class="table-responsive">
+                <table class="table table-sm table-hover app-table mb-0">
+                    <thead>
+                        <tr>
+                            <th>CVE</th><th>Published</th><th class="text-center">Severity</th>
+                            <th class="text-center">CVSS</th><th class="text-center">KEV</th><th>Vendor/Product</th><th>Result</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    document.getElementById('nvd-preview-run-btn').addEventListener('click', runNvdPreview);
+
     function fetchSourceTypes() {
         fetch(`${API_BASE}/source-types`)
             .then(response => response.json())
@@ -261,6 +358,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <button class="btn btn-outline-secondary" data-action="scan" data-id="${source.id}" title="Run Scan" ${!source.enabled ? 'disabled' : ''}><i class="bi bi-play-fill"></i></button>
                 <button class="btn btn-outline-secondary" data-action="toggle" data-id="${source.id}" data-enabled="${source.enabled}" title="${source.enabled ? 'Disable' : 'Enable'}"><i class="bi ${source.enabled ? 'bi-toggle-on' : 'bi-toggle-off'}"></i></button>
                 <button class="btn btn-outline-secondary" data-action="history" data-id="${source.id}" title="Scan History"><i class="bi bi-clock-history"></i></button>
+                ${isSystemSource ? `<button class="btn btn-outline-secondary" data-action="nvd-preview" data-id="${source.id}" title="Dry Run Preview"><i class="bi bi-binoculars"></i></button>` : ''}
                 ${isSystemSource ? '' : `<button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>`}
             </div>
         `;
@@ -275,6 +373,7 @@ document.addEventListener('DOMContentLoaded', function () {
         else if (action === 'toggle') toggleSourceEnabled(id, btn.dataset.enabled === 'true');
         else if (action === 'history') showSourceHistory(id);
         else if (action === 'delete') openDeleteSourceModal(id);
+        else if (action === 'nvd-preview') openNvdPreviewModal();
     }
 
     let lastFilteredSources = [];

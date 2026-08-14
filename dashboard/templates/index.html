@@ -1132,6 +1132,37 @@
         </div>
     </div>
 
+    <!-- NVD Discovery Dry Run Preview Modal -->
+    <div class="modal fade" id="nvdPreviewModal" tabindex="-1" aria-labelledby="nvdPreviewModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="nvdPreviewModalLabel">NVD Discovery &mdash; Dry Run Preview</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">
+                        Shows what NVD discovery would do over a chosen window &mdash; nothing is saved, no RT drafts
+                        are created, and the real discovery watermark isn't touched. Safe to run as often as you like.
+                    </p>
+                    <div class="d-flex align-items-end gap-2 mb-3">
+                        <div>
+                            <label for="nvd-preview-days" class="form-label mb-0 small">Days back</label>
+                            <input type="number" min="1" max="14" value="3" class="form-control form-control-sm" id="nvd-preview-days" style="width: 100px;">
+                        </div>
+                        <button type="button" class="btn btn-primary btn-sm" id="nvd-preview-run-btn">Run Preview</button>
+                    </div>
+                    <div id="nvd-preview-results">
+                        <p class="text-muted small">Set a window and click Run Preview.</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast notifications -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container" style="z-index: 1090;"></div>
 

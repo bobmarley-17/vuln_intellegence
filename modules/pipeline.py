@@ -23,6 +23,7 @@ from modules.epss import EPSSClient
 from modules.kev import KEVClient
 from modules.mitre import MitreClient
 from modules.models import Article, EnrichedCVE
+from modules.normalizer import match_cve_to_product
 from modules.nvd import NVD_BASE_URL, NVDClient
 from modules.risk import RiskScorer
 from modules.rt import RTClient
@@ -252,16 +253,13 @@ class Pipeline:
                 continue
 
             has_exposure = bool(self.cache.get_action1_exposures_for_cve(cve_id))
-            is_kev = cve.kev_listed
-            is_critical = cve.risk_level == "Critical"
-            relevant = is_kev or is_critical or has_exposure
-            reason = "kev" if is_kev else "critical" if is_critical else "action1_exposure" if has_exposure else "not_relevant"
+            relevant, reason = self._classify_relevance(cve, has_exposure)
             self.cache.record_nvd_cve_evaluated(cve_id, relevant=relevant, reason=reason)
 
             if relevant:
                 self.cache.save_cve(cve)
                 relevant_count += 1
-                if is_kev:
+                if cve.kev_listed:
                     kev_count += 1
 
         self.cache.set_nvd_discovery_state(window_end.isoformat())
@@ -361,6 +359,37 @@ class Pipeline:
         self.cache.save_cve(enriched)
         return enriched
 
+    def _compute_enrichment(self, cve: EnrichedCVE) -> None:
+        """Every enrichment step that only mutates `cve` in memory -- NVD,
+        MITRE, EPSS, KEV, vendor identification, summary, risk score. No
+        cache writes, no external side effects beyond read-only API calls.
+        Shared by _enrich_cve() (which goes on to persist Action1 exposure
+        and possibly create an RT draft) and preview_nvd_discovery() (which
+        deliberately does neither, so it's safe to run repeatedly)."""
+        configurations = self.nvd.enrich(cve.cve_id, cve)
+        self.mitre.enrich(cve.cve_id, cve)
+        self.epss.enrich(cve.cve_id, cve)
+        self.kev.enrich(cve.cve_id, cve)
+        self.vendor_identifier.enrich(cve, configurations)
+        cve.summary = self.summarizer.summarize(cve)
+        self.risk_scorer.score(cve)
+
+    @staticmethod
+    def _classify_relevance(cve: EnrichedCVE, has_action1_exposure: bool) -> tuple[bool, str]:
+        """The one 'is this CVE worth keeping' rule, shared by real
+        discovery and the preview so they can never disagree. KEV/Critical
+        are included (not just an Action1 match) specifically so a CVE that
+        would trigger an RT auto-draft (KEV-or-Critical, see _enrich_cve)
+        is never the one discarded -- that would leave the draft pointing
+        at a CVE the rest of the app can't display."""
+        if cve.kev_listed:
+            return True, "kev"
+        if cve.risk_level == "Critical":
+            return True, "critical"
+        if has_action1_exposure:
+            return True, "action1_exposure"
+        return False, "not_relevant"
+
     def _enrich_cve(self, cve_id: str, source_articles: list[str], discovered_via: str = "article") -> EnrichedCVE:
         logger.info("Enriching %s", cve_id)
         # A CVE's original discovery channel/date is set once and carried
@@ -375,16 +404,9 @@ class Pipeline:
             first_seen_at=existing.first_seen_at if existing else datetime.now(timezone.utc).isoformat(),
         )
 
-        configurations = self.nvd.enrich(cve_id, cve)
-        self.mitre.enrich(cve_id, cve)
-        self.epss.enrich(cve_id, cve)
-        self.kev.enrich(cve_id, cve)
-        self.vendor_identifier.enrich(cve, configurations)
+        self._compute_enrichment(cve)
         if self.action1:
             self.action1.match_exposure(cve, self.cache)
-
-        cve.summary = self.summarizer.summarize(cve)
-        self.risk_scorer.score(cve)
 
         if self.rt and (cve.kev_listed or cve.risk_level == "Critical") and not self.cache.get_rt_draft_for_cve(cve.cve_id):
             # Never creates a real RT ticket here -- only a local draft an
@@ -396,3 +418,74 @@ class Pipeline:
                 logger.exception("Failed to create RT draft for %s", cve.cve_id)
 
         return cve
+
+    def _action1_match_preview(self, cve: EnrichedCVE) -> bool:
+        """Read-only equivalent of Action1Client.match_exposure -- same
+        match_cve_to_product logic, but returns a bool instead of writing
+        to action1_exposures. Used only by preview_nvd_discovery()."""
+        if not self.action1:
+            return False
+        for row in self.cache.get_action1_software():
+            if not row.get("product"):
+                continue
+            result = match_cve_to_product(cve, row.get("vendor") or "", row["product"], row.get("version"))
+            if result is not None and result["version_status"] != "not_affected":
+                return True
+        return False
+
+    def preview_nvd_discovery(self, days_back: int, max_candidates: int = 50) -> dict:
+        """Shows what discover_from_nvd() would do over the last
+        `days_back` days WITHOUT saving anything, creating RT drafts,
+        writing Action1 exposure rows, or touching the discovery
+        watermark/evaluated log -- safe to run repeatedly to sanity-check
+        the relevance filter against real NVD data. Already-known CVEs
+        (cached or already evaluated) are reported from what's already on
+        file rather than re-fetched, so only genuinely new candidates cost
+        a live NVD/MITRE/EPSS lookup; `max_candidates` bounds worst-case
+        runtime for a large window since this runs synchronously."""
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days_back)
+        candidates = self.nvd.fetch_published_between(start, end)
+
+        truncated = len(candidates) > max_candidates
+        results = []
+        for cve_id in candidates[:max_candidates]:
+            cached = self.cache.get_cve(cve_id)
+            evaluated = self.cache.is_nvd_cve_evaluated(cve_id)
+
+            if cached is not None:
+                cve = cached
+                has_exposure = bool(self.cache.get_action1_exposures_for_cve(cve_id))
+            else:
+                cve = EnrichedCVE(cve_id=cve_id)
+                try:
+                    self._compute_enrichment(cve)
+                except Exception as exc:
+                    results.append({"cve_id": cve_id, "error": str(exc)})
+                    continue
+                has_exposure = self._action1_match_preview(cve)
+
+            relevant, reason = self._classify_relevance(cve, has_exposure)
+            results.append(
+                {
+                    "cve_id": cve_id,
+                    "already_known": cached is not None,
+                    "already_evaluated": evaluated,
+                    "would_keep": relevant,
+                    "reason": reason,
+                    "severity": cve.risk_level,
+                    "cvss": cve.cvss_v4_score if cve.cvss_v4_score is not None else cve.cvss_v3_score,
+                    "kev_listed": cve.kev_listed,
+                    "vendor": cve.vendor,
+                    "product": cve.product,
+                    "published_date": cve.published_date,
+                }
+            )
+
+        return {
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "total_candidates": len(candidates),
+            "truncated": truncated,
+            "results": results,
+        }

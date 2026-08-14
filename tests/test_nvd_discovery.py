@@ -289,6 +289,92 @@ class NvdDiscoveryWindowTests(unittest.TestCase):
         self.assertAlmostEqual(start.timestamp(), expected_floor.timestamp(), delta=2)
 
 
+class PreviewNvdDiscoveryTests(unittest.TestCase):
+    """preview_nvd_discovery() must never mutate anything -- no saved CVEs,
+    no RT drafts, no Action1 exposure writes, no watermark/evaluated-log
+    changes -- so it's safe to run repeatedly as a dry run."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.pipeline = _make_pipeline(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_relevant_candidate_is_reported_but_not_saved(self):
+        self.pipeline.kev.enrich = lambda cve_id, cve: setattr(cve, "kev_listed", True)
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-1001"]
+
+        result = self.pipeline.preview_nvd_discovery(days_back=3)
+
+        self.assertEqual(result["total_candidates"], 1)
+        row = result["results"][0]
+        self.assertTrue(row["would_keep"])
+        self.assertEqual(row["reason"], "kev")
+        # The whole point of a dry run: nothing was actually persisted.
+        self.assertIsNone(self.pipeline.cache.get_cve("CVE-2026-1001"))
+        self.assertFalse(self.pipeline.cache.is_nvd_cve_evaluated("CVE-2026-1001"))
+
+    def test_does_not_write_action1_exposure_rows(self):
+        def fake_match_exposure(cve, cache):
+            raise AssertionError("preview must never call the write-side Action1 match_exposure")
+
+        self.pipeline.action1 = SimpleNamespace(match_exposure=fake_match_exposure)
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-1002"]
+
+        result = self.pipeline.preview_nvd_discovery(days_back=3)
+
+        self.assertEqual(self.pipeline.cache.get_all_action1_exposures(), [])
+        self.assertEqual(result["results"][0]["would_keep"], False)
+
+    def test_does_not_create_rt_drafts_for_a_critical_candidate(self):
+        self.pipeline.risk_scorer.score = lambda cve: setattr(cve, "risk_level", "Critical")
+        self.pipeline.rt = SimpleNamespace(
+            create_ticket=lambda **kwargs: (_ for _ in ()).throw(AssertionError("must never be called")),
+            search_tickets_for_cve=lambda cve_id: [],
+        )
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-1003"]
+
+        result = self.pipeline.preview_nvd_discovery(days_back=3)
+
+        self.assertTrue(result["results"][0]["would_keep"])
+        self.assertIsNone(self.pipeline.cache.get_rt_draft_for_cve("CVE-2026-1003"))
+
+    def test_already_known_cve_is_reported_from_cache_without_reenrichment(self):
+        enrich_calls = []
+        original_compute = self.pipeline._compute_enrichment
+
+        def counting_compute(cve):
+            enrich_calls.append(cve.cve_id)
+            original_compute(cve)
+
+        self.pipeline._compute_enrichment = counting_compute
+        cached = self.pipeline._enrich_cve("CVE-2026-1004", [], discovered_via="article")
+        self.pipeline.cache.save_cve(cached)
+        enrich_calls.clear()
+
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-1004"]
+        result = self.pipeline.preview_nvd_discovery(days_back=3)
+
+        self.assertEqual(enrich_calls, [])  # already known -- no fresh NVD/MITRE/EPSS calls
+        self.assertTrue(result["results"][0]["already_known"])
+
+    def test_truncates_at_max_candidates(self):
+        candidate_ids = [f"CVE-2026-{2000 + i}" for i in range(5)]
+        self.pipeline.nvd.fetch_published_between = lambda start, end: candidate_ids
+
+        result = self.pipeline.preview_nvd_discovery(days_back=3, max_candidates=2)
+
+        self.assertEqual(result["total_candidates"], 5)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(result["results"]), 2)
+
+    def test_does_not_advance_the_discovery_watermark(self):
+        self.pipeline.nvd.fetch_published_between = lambda start, end: []
+        self.pipeline.preview_nvd_discovery(days_back=3)
+        self.assertIsNone(self.pipeline.cache.get_nvd_discovery_state())
+
+
 class NvdDiscoverySourceIntegrationTests(unittest.TestCase):
     """Confirms the seeded system source and run_single()/_scan_source()
     routing record to the *existing* scan_history mechanism, with no new

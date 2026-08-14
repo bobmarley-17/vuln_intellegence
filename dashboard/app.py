@@ -714,6 +714,28 @@ def create_app(config: Config, debug: bool = False) -> Flask:
         result = test_source_connection(url, source_type, timeout=config.request_timeout, user_agent=config.user_agent)
         return jsonify(result)
 
+    @app.route("/api/nvd-discovery/preview", methods=["POST"])
+    def api_nvd_discovery_preview():
+        """Dry run: shows what NVD discovery would do over a chosen window
+        without saving anything, creating RT drafts, or touching the real
+        discovery watermark. Runs synchronously (like /api/sources/test) --
+        bounded by max_candidates so a busy window can't hang the request
+        indefinitely."""
+        if runner.status()["running"]:
+            return jsonify({"error": "A scan or pipeline job is already running"}), 409
+        data = request.get_json(silent=True) or {}
+        try:
+            days = int(data.get("days", 3))
+        except (TypeError, ValueError):
+            return jsonify({"error": "days must be a number"}), 400
+        days = max(1, min(days, 14))
+        try:
+            result = runner.pipeline.preview_nvd_discovery(days)
+        except Exception as exc:
+            logger.exception("NVD discovery preview failed")
+            return jsonify({"error": str(exc)}), 502
+        return jsonify(result)
+
     @app.route("/api/action1/status")
     def api_action1_status():
         return jsonify({"configured": config.action1_configured, **cache.get_action1_sync_status()})
