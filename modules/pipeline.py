@@ -20,6 +20,7 @@ from modules.action1 import Action1Client
 from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.epss import EPSSClient
+from modules.job_control import CancellationToken, JobCancelled
 from modules.kev import KEVClient
 from modules.mitre import MitreClient
 from modules.models import Article, EnrichedCVE
@@ -134,22 +135,29 @@ class Pipeline:
         except DuplicateSourceError:
             pass
 
-    def run(self) -> dict:
+    def run(self, token: CancellationToken | None = None) -> dict:
         """Scan every enabled source and enrich whatever CVEs turn up."""
         self.downloader.reset_seen_urls()
         sources = self.cache.get_enabled_sources()
         logger.info("Scanning %d enabled source(s)", len(sources))
 
+        # Regular article sources fetch quickly (bounded by request_timeout)
+        # so they're allowed to finish once dispatched -- Python threads
+        # can't be safely force-killed anyway. The token is still passed
+        # through so the NVD discovery source (which can run long) checks
+        # it between candidates even inside a full run().
         all_articles: list[Article] = []
         with ThreadPoolExecutor(max_workers=self.config.concurrency) as pool:
-            futures = [pool.submit(self._scan_source, source) for source in sources]
+            futures = [pool.submit(self._scan_source, source, token) for source in sources]
             for future in as_completed(futures):
                 all_articles.extend(future.result())
+        if token:
+            token.checkpoint()
 
         cve_to_articles = self._save_articles_and_index_cves(all_articles)
         logger.info("Found %d unique CVEs across %d articles", len(cve_to_articles), len(all_articles))
 
-        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+        enriched_count, cached_count = self._enrich_cves(cve_to_articles, token=token)
         logger.info(
             "Pipeline complete: %d sources, %d articles, %d CVEs (%d freshly enriched, %d served from cache)",
             len(sources),
@@ -166,7 +174,7 @@ class Pipeline:
             "cached": cached_count,
         }
 
-    def run_single(self, source_id: int) -> dict:
+    def run_single(self, source_id: int, token: CancellationToken | None = None) -> dict:
         """Scan exactly one source end-to-end. Used for the dashboard's
         per-source 'Run Scan' action and to process a newly added source
         without waiting for the next full run(). Refuses disabled sources,
@@ -176,9 +184,9 @@ class Pipeline:
             return {"sources": 0, "articles": 0, "cves": 0, "enriched": 0, "cached": 0}
 
         self.downloader.reset_seen_urls()
-        articles = self._scan_source(source)
+        articles = self._scan_source(source, token=token)
         cve_to_articles = self._save_articles_and_index_cves(articles)
-        enriched_count, cached_count = self._enrich_cves(cve_to_articles)
+        enriched_count, cached_count = self._enrich_cves(cve_to_articles, token=token)
         return {
             "sources": 1,
             "articles": len(articles),
@@ -187,7 +195,7 @@ class Pipeline:
             "cached": cached_count,
         }
 
-    def _run_nvd_discovery(self, source: dict) -> None:
+    def _run_nvd_discovery(self, source: dict, token: CancellationToken | None = None) -> None:
         """Runs discover_from_nvd() for the system NVD source and records
         the outcome via the same record_scan() every article source uses,
         so Scan History / the Sources table display it with no new UI."""
@@ -195,7 +203,18 @@ class Pipeline:
         self.cache.mark_source_scanning(source_id)
         started = time.monotonic()
         try:
-            result = self.discover_from_nvd()
+            result = self.discover_from_nvd(token=token)
+        except JobCancelled:
+            logger.info("NVD discovery cancelled")
+            self.cache.record_scan(
+                source_id,
+                status="Cancelled",
+                duration_seconds=time.monotonic() - started,
+                articles_processed=0,
+                cves_found=0,
+                error_message="Cancelled by user",
+            )
+            return
         except Exception as exc:
             logger.exception("NVD discovery failed")
             self.cache.record_scan(
@@ -216,7 +235,7 @@ class Pipeline:
             cves_found=result["relevant"],
         )
 
-    def discover_from_nvd(self) -> dict:
+    def discover_from_nvd(self, token: CancellationToken | None = None) -> dict:
         """Pulls recently-published CVEs directly from NVD (rather than
         waiting for a blog to mention them) and enriches the ones that are
         actually relevant -- KEV-listed, Critical severity, or matched
@@ -244,6 +263,8 @@ class Pipeline:
         relevant_count = 0
         kev_count = 0
         for cve_id in candidates:
+            if token:
+                token.checkpoint()  # outside the try/except below so JobCancelled isn't swallowed
             if self.cache.get_cve(cve_id) is not None or self.cache.is_nvd_cve_evaluated(cve_id):
                 continue
             try:
@@ -269,14 +290,14 @@ class Pipeline:
         )
         return {"received": len(candidates), "relevant": relevant_count, "kev": kev_count}
 
-    def _scan_source(self, source: dict) -> list[Article]:
+    def _scan_source(self, source: dict, token: CancellationToken | None = None) -> list[Article]:
         """Fetch one source and record the outcome to scan_history,
         regardless of success or failure -- a source that errors out must
         never stop the rest of the scan. The NVD discovery system source
         doesn't produce Articles at all, so it's handled separately and
         always reports back an empty article list here."""
         if source["source_type"] == "nvd_discovery":
-            self._run_nvd_discovery(source)
+            self._run_nvd_discovery(source, token=token)
             return []
 
         source_id = source["id"]
@@ -326,10 +347,14 @@ class Pipeline:
                 cve_to_articles.setdefault(cve_id, []).append(article.url)
         return cve_to_articles
 
-    def _enrich_cves(self, cve_to_articles: dict[str, list[str]]) -> tuple[int, int]:
+    def _enrich_cves(
+        self, cve_to_articles: dict[str, list[str]], token: CancellationToken | None = None
+    ) -> tuple[int, int]:
         enriched_count = 0
         cached_count = 0
         for cve_id, source_articles in cve_to_articles.items():
+            if token:
+                token.checkpoint()  # outside the try/except below so JobCancelled isn't swallowed
             cached = self.cache.get_cached_cve(cve_id)
             if cached:
                 cached.source_articles = sorted(set(cached.source_articles) | set(source_articles))

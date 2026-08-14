@@ -3244,8 +3244,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderPipelineStatus(data) {
         const el = document.getElementById('pipeline-status');
+        const pauseBtn = document.getElementById('pipeline-pause-btn');
+        const cancelBtn = document.getElementById('pipeline-cancel-btn');
+
+        pauseBtn.classList.toggle('d-none', !data.running);
+        cancelBtn.classList.toggle('d-none', !data.running);
         if (data.running) {
+            pauseBtn.title = data.paused ? 'Resume' : 'Pause';
+            pauseBtn.innerHTML = `<i class="bi ${data.paused ? 'bi-play-fill' : 'bi-pause-fill'}"></i>`;
+        }
+
+        if (data.running && data.paused) {
+            el.innerHTML = `<i class="bi bi-pause-circle me-1"></i>Paused: ${escapeHtml(data.job || '')}`;
+        } else if (data.running) {
             el.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span>${escapeHtml(data.job || 'Running')}`;
+        } else if (data.cancelled) {
+            el.textContent = 'Last run: cancelled';
         } else if (data.last_error) {
             el.textContent = `Last run failed: ${data.last_error}`;
         } else if (data.last_finished_at) {
@@ -3256,6 +3270,31 @@ document.addEventListener('DOMContentLoaded', function () {
             el.textContent = 'Idle';
         }
     }
+
+    function pipelineControlAction(endpoint, successMessage) {
+        fetch(`${API_BASE}/pipeline/${endpoint}`, { method: 'POST' })
+            .then(response => response.json().then(data => ({ status: response.status, body: data })))
+            .then(({ status, body: data }) => {
+                if (status === 200) {
+                    if (successMessage) showToast(successMessage, 'success');
+                } else {
+                    showToast(data.error || `Could not ${endpoint}.`, 'danger');
+                }
+                pollPipelineStatus();
+            })
+            .catch(error => {
+                console.error(`Error requesting pipeline ${endpoint}:`, error);
+                showToast('A network error occurred.', 'danger');
+            });
+    }
+
+    document.getElementById('pipeline-pause-btn').addEventListener('click', () => {
+        const isPaused = document.getElementById('pipeline-pause-btn').title === 'Resume';
+        pipelineControlAction(isPaused ? 'resume' : 'pause');
+    });
+    document.getElementById('pipeline-cancel-btn').addEventListener('click', () => {
+        pipelineControlAction('cancel', 'Cancel requested — stopping at the next safe point.');
+    });
 
     function pollPipelineStatus() {
         fetch(`${API_BASE}/pipeline/status`)

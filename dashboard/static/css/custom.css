@@ -719,6 +719,7 @@ th.sort-asc .sort-icon, th.sort-desc .sort-icon { color: var(--accent); opacity:
 .source-status-pill.status-pending { background: rgba(137, 135, 129, 0.18); color: var(--text-muted); }
 .source-status-pill.status-failed { background: rgba(208, 59, 59, 0.14); color: var(--critical); }
 .source-status-pill.status-disabled { background: rgba(137, 135, 129, 0.14); color: var(--text-muted); }
+.source-status-pill.status-cancelled { background: rgba(236, 131, 90, 0.14); color: var(--high); }
 
 .source-type-badge {
   display: inline-block;

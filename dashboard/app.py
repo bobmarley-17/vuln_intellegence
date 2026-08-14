@@ -24,6 +24,7 @@ from config import Config
 from modules.cache import DuplicateSourceError, VulnCache
 from modules.downloader import Downloader
 from modules.extractor import CVE_PATTERN
+from modules.job_control import CancellationToken, JobCancelled
 from modules.models import EnrichedCVE
 from modules.normalizer import match_cve_to_product
 from modules.pipeline import Pipeline
@@ -53,12 +54,16 @@ class AppUser(UserMixin):
 class PipelineRunner:
     """Runs pipeline jobs (full runs, single-source enrichments) on a
     background thread, one at a time, and exposes their status for the
-    dashboard to poll."""
+    dashboard to poll. Since only one job ever runs at a time, a single
+    CancellationToken per run is enough to give every job type (source
+    scan, NVD discovery, Action1 sync, full run) pause/cancel for free --
+    see modules.job_control."""
 
     def __init__(self, pipeline: Pipeline):
         self.pipeline = pipeline
         self._run_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._token: CancellationToken | None = None
         self._state = {
             "running": False,
             "job": None,
@@ -66,35 +71,48 @@ class PipelineRunner:
             "last_finished_at": None,
             "last_result": None,
             "last_error": None,
+            "cancelled": False,
         }
 
     def status(self) -> dict:
         with self._state_lock:
-            return dict(self._state)
+            state = dict(self._state)
+        token = self._token
+        state["paused"] = bool(token and token.is_paused)
+        return state
 
     def start(self, job_name: str, fn, wait_if_busy: bool = True, on_done=None) -> bool:
-        """Start `fn` on a background thread under the run lock. If another
-        job is already running and `wait_if_busy` is False, returns False
-        without queuing. Otherwise the job is queued (or run immediately)
-        and this always returns True. `on_done`, if given, always runs after
-        the job finishes (success or failure) -- used by the scheduler to
-        clear its own pending-source bookkeeping."""
+        """Start `fn(token)` on a background thread under the run lock. If
+        another job is already running and `wait_if_busy` is False, returns
+        False without queuing. Otherwise the job is queued (or run
+        immediately) and this always returns True. `on_done`, if given,
+        always runs after the job finishes (success, failure, or
+        cancellation) -- used by the scheduler to clear its own
+        pending-source bookkeeping."""
         if not wait_if_busy and self._run_lock.locked():
             return False
 
+        token = CancellationToken()
+
         def target():
             with self._run_lock:
+                self._token = token
                 with self._state_lock:
                     self._state.update(
                         running=True,
                         job=job_name,
                         started_at=datetime.now(timezone.utc).isoformat(),
                         last_error=None,
+                        cancelled=False,
                     )
                 try:
-                    result = fn()
+                    result = fn(token)
                     with self._state_lock:
                         self._state["last_result"] = result
+                except JobCancelled:
+                    logger.info("Background job '%s' cancelled", job_name)
+                    with self._state_lock:
+                        self._state["cancelled"] = True
                 except Exception as exc:
                     logger.exception("Background job '%s' failed", job_name)
                     with self._state_lock:
@@ -106,6 +124,7 @@ class PipelineRunner:
                             job=None,
                             last_finished_at=datetime.now(timezone.utc).isoformat(),
                         )
+                    self._token = None
                     if on_done:
                         try:
                             on_done()
@@ -113,6 +132,27 @@ class PipelineRunner:
                             logger.exception("on_done callback failed for job '%s'", job_name)
 
         threading.Thread(target=target, daemon=True).start()
+        return True
+
+    def pause(self) -> bool:
+        token = self._token
+        if not token or not self._state.get("running"):
+            return False
+        token.pause()
+        return True
+
+    def resume(self) -> bool:
+        token = self._token
+        if not token:
+            return False
+        token.resume()
+        return True
+
+    def cancel(self) -> bool:
+        token = self._token
+        if not token or not self._state.get("running"):
+            return False
+        token.cancel()
         return True
 
 
@@ -180,7 +220,7 @@ class SourceScheduler:
         label = source.get("name") or source["url"]
         self.runner.start(
             f"Scheduled scan: {label}",
-            lambda: self.runner.pipeline.run_single(source_id),
+            lambda token: self.runner.pipeline.run_single(source_id, token=token),
             wait_if_busy=True,
             on_done=clear_pending,
         )
@@ -610,7 +650,7 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             return jsonify({"error": "A source with this URL already exists"}), 409
 
         if enabled:
-            runner.start(f"Processing source: {name or url}", lambda: runner.pipeline.run_single(source_id))
+            runner.start(f"Processing source: {name or url}", lambda token: runner.pipeline.run_single(source_id, token=token))
         return jsonify({"message": "Source added; processing in the background", "id": source_id, "source": cache.get_source(source_id)}), 201
 
     @app.route("/api/sources/<int:source_id>", methods=["GET"])
@@ -682,7 +722,9 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             return jsonify({"error": "Source is disabled; enable it before scanning"}), 400
 
         label = source.get("name") or source["url"]
-        started = runner.start(f"Scanning: {label}", lambda: runner.pipeline.run_single(source_id), wait_if_busy=False)
+        started = runner.start(
+            f"Scanning: {label}", lambda token: runner.pipeline.run_single(source_id, token=token), wait_if_busy=False
+        )
         if not started:
             return jsonify({"error": "A scan or pipeline job is already running"}), 409
         return jsonify({"message": "Scan started"}), 202
@@ -746,7 +788,7 @@ def create_app(config: Config, debug: bool = False) -> Flask:
             return jsonify({"error": "Action1 is not configured. Set ACTION1_CLIENT_ID/SECRET/ORG_ID."}), 400
         started = runner.start(
             "Action1 inventory sync",
-            lambda: runner.pipeline.action1.sync_inventory(cache),
+            lambda token: runner.pipeline.action1.sync_inventory(cache, token=token),
             wait_if_busy=False,
         )
         if not started:
@@ -892,9 +934,27 @@ def create_app(config: Config, debug: bool = False) -> Flask:
     def api_pipeline_status():
         return jsonify(runner.status())
 
+    @app.route("/api/pipeline/pause", methods=["POST"])
+    def api_pipeline_pause():
+        if not runner.pause():
+            return jsonify({"error": "No job is currently running"}), 409
+        return jsonify({"message": "Pause requested"})
+
+    @app.route("/api/pipeline/resume", methods=["POST"])
+    def api_pipeline_resume():
+        if not runner.resume():
+            return jsonify({"error": "No job to resume"}), 409
+        return jsonify({"message": "Resume requested"})
+
+    @app.route("/api/pipeline/cancel", methods=["POST"])
+    def api_pipeline_cancel():
+        if not runner.cancel():
+            return jsonify({"error": "No job is currently running"}), 409
+        return jsonify({"message": "Cancel requested"})
+
     @app.route("/api/pipeline/run", methods=["POST"])
     def api_pipeline_run():
-        started = runner.start("Full pipeline run", runner.pipeline.run, wait_if_busy=False)
+        started = runner.start("Full pipeline run", lambda token: runner.pipeline.run(token=token), wait_if_busy=False)
         if not started:
             return jsonify({"error": "A pipeline job is already running"}), 409
         return jsonify({"message": "Pipeline run started"}), 202

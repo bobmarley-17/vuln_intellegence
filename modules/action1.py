@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import requests
 
 from modules.cache import VulnCache
+from modules.job_control import CancellationToken
 from modules.models import EnrichedCVE
 from modules.normalizer import match_cve_to_product
 
@@ -158,7 +159,7 @@ class Action1Client:
             software.append({"name": name, "vendor": fields.get("Vendor"), "version": fields.get("Version")})
         return software
 
-    def sync_inventory(self, cache: VulnCache) -> dict:
+    def sync_inventory(self, cache: VulnCache, token: CancellationToken | None = None) -> dict:
         """Pull the org's managed endpoints and their installed software from
         Action1, overwrite the locally cached snapshot, and immediately
         re-match every already-known CVE against it. The pipeline only calls
@@ -167,7 +168,12 @@ class Action1Client:
         existed *before* this sync unmatched indefinitely -- most cached
         CVEs are never touched again unless they resurface in a newly
         scanned article, so a sync would otherwise silently produce zero
-        exposure rows despite a populated inventory."""
+        exposure rows despite a populated inventory.
+
+        If cancelled partway (via `token`), nothing collected so far is
+        written -- replace_action1_inventory() is only called after the
+        full endpoint list is walked, so a cancelled sync leaves the
+        previous good inventory untouched rather than partially overwriting it."""
         raw_endpoints = self.get_managed_endpoints()
         if not raw_endpoints:
             # A real org with a previously-synced fleet does not suddenly
@@ -193,6 +199,8 @@ class Action1Client:
 
         software: list[dict] = []
         for ep in endpoints:
+            if token:
+                token.checkpoint()
             for item in self._fetch_installed_software(ep["id"]):
                 software.append(
                     {
@@ -207,6 +215,8 @@ class Action1Client:
 
         all_cves = cache.get_all_cves()
         for cve in all_cves:
+            if token:
+                token.checkpoint()
             self.match_exposure(cve, cache)
 
         logger.info(

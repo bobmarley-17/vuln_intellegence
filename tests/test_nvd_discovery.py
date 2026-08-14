@@ -15,6 +15,7 @@ from unittest.mock import patch
 import requests
 
 from config import Config
+from modules.job_control import CancellationToken, JobCancelled
 from modules.nvd import NVDClient
 from modules.pipeline import Pipeline
 
@@ -250,6 +251,63 @@ class DiscoveredViaTests(unittest.TestCase):
 
         self.assertEqual(second.discovered_via, "article")  # not overwritten to "nvd"
         self.assertEqual(second.first_seen_at, first.first_seen_at)
+
+
+class DiscoverFromNvdCancellationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.pipeline = _make_pipeline(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_cancelling_mid_loop_stops_processing_further_candidates(self):
+        self.pipeline.kev.enrich = lambda cve_id, cve: setattr(cve, "kev_listed", True)
+        candidates = ["CVE-2026-3001", "CVE-2026-3002", "CVE-2026-3003"]
+        self.pipeline.nvd.fetch_published_between = lambda start, end: candidates
+
+        token = CancellationToken()
+
+        # Cancel after the first candidate has been fully processed.
+        original_enrich_cve = self.pipeline._enrich_cve
+
+        def cancel_after_first(cve_id, source_articles, discovered_via="article"):
+            cve = original_enrich_cve(cve_id, source_articles, discovered_via)
+            if cve_id == "CVE-2026-3001":
+                token.cancel()
+            return cve
+
+        self.pipeline._enrich_cve = cancel_after_first
+
+        with self.assertRaises(JobCancelled):
+            self.pipeline.discover_from_nvd(token=token)
+
+        # The first candidate, fully processed before cancellation, is kept.
+        self.assertIsNotNone(self.pipeline.cache.get_cve("CVE-2026-3001"))
+        # Later candidates were never reached.
+        self.assertIsNone(self.pipeline.cache.get_cve("CVE-2026-3002"))
+        self.assertFalse(self.pipeline.cache.is_nvd_cve_evaluated("CVE-2026-3002"))
+
+    def test_cancelling_mid_loop_does_not_advance_the_watermark(self):
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-3004"]
+        token = CancellationToken()
+        token.cancel()  # already cancelled before the loop even starts
+
+        with self.assertRaises(JobCancelled):
+            self.pipeline.discover_from_nvd(token=token)
+
+        self.assertIsNone(self.pipeline.cache.get_nvd_discovery_state())
+
+    def test_run_nvd_discovery_records_cancelled_status_not_failed(self):
+        self.pipeline.nvd.fetch_published_between = lambda start, end: ["CVE-2026-3005"]
+        token = CancellationToken()
+        token.cancel()
+
+        source = next(s for s in self.pipeline.cache.get_all_sources() if s["source_type"] == "nvd_discovery")
+        self.pipeline._run_nvd_discovery(source, token=token)  # must not raise
+
+        history = self.pipeline.cache.get_scan_history(source["id"])
+        self.assertEqual(history[0]["status"], "Cancelled")
 
 
 class NvdDiscoveryWindowTests(unittest.TestCase):

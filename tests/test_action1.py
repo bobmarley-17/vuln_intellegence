@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from modules.action1 import Action1Client
 from modules.cache import VulnCache
+from modules.job_control import CancellationToken, JobCancelled
 from modules.models import AffectedProduct, EnrichedCVE
 
 
@@ -232,6 +233,88 @@ class Action1ClientTests(unittest.TestCase):
             status = cache.get_action1_sync_status()
             self.assertEqual(status["endpoint_count"], 1)
             self.assertEqual(status["software_count"], 1)
+
+
+class Action1SyncCancellationTests(unittest.TestCase):
+    """A cancelled sync must never partially overwrite the last known-good
+    inventory -- replace_action1_inventory() is only called after the full
+    endpoint list is walked, so cancelling anywhere in that loop leaves the
+    previous data untouched, same principle as the zero-endpoints guard."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.cache = VulnCache(str(Path(self._tmpdir.name) / "cache.db"))
+        base = "https://app.action1.test/api/3.0"
+        good_session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"items": [{"id": 9, "name": "host-old"}], "next_page": None}
+                ),
+                ("get", f"{base}/installed-software/org-1/data/9"): FakeResponse(
+                    {"items": [{"fields": {"Name": "OldWidget", "Vendor": "Acme", "Version": "1.0"}}]}
+                ),
+            }
+        )
+        make_client(good_session).sync_inventory(self.cache)
+        self.assertEqual(self.cache.get_action1_sync_status()["endpoint_count"], 1)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _multi_endpoint_client(self):
+        base = "https://app.action1.test/api/3.0"
+        session = FakeAction1Session(
+            {
+                ("post", f"{base}/oauth2/token"): FakeResponse({"access_token": "tok", "expires_in": 3600}),
+                ("get", f"{base}/endpoints/managed/org-1"): FakeResponse(
+                    {"items": [{"id": 1, "name": "host-a"}, {"id": 2, "name": "host-b"}], "next_page": None}
+                ),
+                ("get", f"{base}/installed-software/org-1/data/1"): FakeResponse(
+                    {"items": [{"fields": {"Name": "NewWidget", "Vendor": "Acme", "Version": "2.0"}}]}
+                ),
+                ("get", f"{base}/installed-software/org-1/data/2"): FakeResponse(
+                    {"items": [{"fields": {"Name": "OtherWidget", "Vendor": "Acme", "Version": "1.0"}}]}
+                ),
+            }
+        )
+        return make_client(session)
+
+    def test_already_cancelled_token_leaves_previous_inventory_untouched(self):
+        client = self._multi_endpoint_client()
+        token = CancellationToken()
+        token.cancel()
+
+        with self.assertRaises(JobCancelled):
+            client.sync_inventory(self.cache, token=token)
+
+        status = self.cache.get_action1_sync_status()
+        self.assertEqual(status["endpoint_count"], 1)
+        software = self.cache.get_action1_software()
+        self.assertEqual(software[0]["product"], "OldWidget")
+
+    def test_cancelling_after_first_endpoint_still_discards_the_partial_batch(self):
+        client = self._multi_endpoint_client()
+        token = CancellationToken()
+        original_fetch = client._fetch_installed_software
+
+        def cancel_after_endpoint_1(endpoint_id):
+            result = original_fetch(endpoint_id)
+            if endpoint_id == "1":
+                token.cancel()
+            return result
+
+        client._fetch_installed_software = cancel_after_endpoint_1
+
+        with self.assertRaises(JobCancelled):
+            client.sync_inventory(self.cache, token=token)
+
+        # Even though endpoint 1's software was fully fetched, the sync
+        # never reached replace_action1_inventory() -- old data stands.
+        status = self.cache.get_action1_sync_status()
+        self.assertEqual(status["endpoint_count"], 1)
+        software = self.cache.get_action1_software()
+        self.assertEqual(software[0]["product"], "OldWidget")
 
 
 class Action1ExposureMatchingTests(unittest.TestCase):
