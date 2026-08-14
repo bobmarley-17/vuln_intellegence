@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta
 
 import requests
 
@@ -11,6 +12,9 @@ from modules.models import EnrichedCVE
 logger = logging.getLogger("vuln_intel.nvd")
 
 NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.000Z"
+_MAX_DISCOVERY_RANGE_DAYS = 120  # NVD's documented cap on pubStartDate/pubEndDate spans
+_DISCOVERY_PAGE_SIZE = 2000  # NVD's documented max resultsPerPage
 
 
 class NVDClient:
@@ -60,26 +64,68 @@ class NVDClient:
         return configurations
 
     def _fetch(self, cve_id: str) -> dict | None:
-        params = {"cveId": cve_id}
+        return self._get({"cveId": cve_id}, context=cve_id)
+
+    def _get(self, params: dict, context: str) -> dict | None:
+        """Shared GET + retry/429-backoff logic for every NVD call, single
+        CVE lookup or bulk discovery page alike. `context` is just a label
+        for log messages (a CVE ID, or a discovery page description)."""
         delay = self.rate_limit_delay
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = self.session.get(NVD_BASE_URL, params=params, timeout=self.timeout)
                 if resp.status_code == 429:
                     wait = self.backoff_factor**attempt
-                    logger.warning("NVD rate-limited on %s, backing off %.1fs", cve_id, wait)
+                    logger.warning("NVD rate-limited on %s, backing off %.1fs", context, wait)
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
                 time.sleep(delay)  # stay under the rate limit for the *next* call
                 return resp.json()
             except requests.exceptions.Timeout:
-                logger.error("NVD timeout for %s (attempt %d/%d)", cve_id, attempt, self.max_retries)
+                logger.error("NVD timeout for %s (attempt %d/%d)", context, attempt, self.max_retries)
             except requests.exceptions.RequestException as exc:
-                logger.error("NVD error for %s (attempt %d/%d): %s", cve_id, attempt, self.max_retries, exc)
+                logger.error("NVD error for %s (attempt %d/%d): %s", context, attempt, self.max_retries, exc)
             time.sleep(self.backoff_factor**attempt)
-        logger.error("NVD lookup failed for %s after %d attempts", cve_id, self.max_retries)
+        logger.error("NVD lookup failed for %s after %d attempts", context, self.max_retries)
         return None
+
+    def fetch_published_between(self, start: datetime, end: datetime) -> list[str]:
+        """CVE IDs published in [start, end), for the NVD discovery feed.
+        Paginated via startIndex/resultsPerPage; raises if any page fails
+        after retries, since a partial discovery result would silently miss
+        CVEs rather than surfacing a clear failure to the caller."""
+        if end - start > timedelta(days=_MAX_DISCOVERY_RANGE_DAYS):
+            raise ValueError(
+                f"NVD discovery window cannot exceed {_MAX_DISCOVERY_RANGE_DAYS} days "
+                f"(got {start.isoformat()} to {end.isoformat()})"
+            )
+
+        cve_ids: list[str] = []
+        start_index = 0
+        while True:
+            params = {
+                "pubStartDate": start.strftime(NVD_DATE_FORMAT),
+                "pubEndDate": end.strftime(NVD_DATE_FORMAT),
+                "startIndex": start_index,
+                "resultsPerPage": _DISCOVERY_PAGE_SIZE,
+            }
+            context = f"discovery page startIndex={start_index}"
+            data = self._get(params, context=context)
+            if data is None:
+                raise RuntimeError(f"NVD discovery query failed for {start.isoformat()} - {end.isoformat()}")
+
+            vulnerabilities = data.get("vulnerabilities", [])
+            for item in vulnerabilities:
+                cve_id = item.get("cve", {}).get("id")
+                if cve_id:
+                    cve_ids.append(cve_id)
+
+            total_results = data.get("totalResults", len(vulnerabilities))
+            start_index += len(vulnerabilities)
+            if not vulnerabilities or start_index >= total_results:
+                break
+        return cve_ids
 
     @staticmethod
     def _parse_metrics(metrics: dict, target: EnrichedCVE) -> None:

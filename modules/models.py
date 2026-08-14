@@ -86,3 +86,5 @@ class EnrichedCVE:
     # Provenance
     source_articles: list[str] = field(default_factory=list)
     last_enriched_at: str | None = None
+    discovered_via: str | None = None  # 'article' | 'manual' | 'nvd' -- set once, never overwritten on re-enrichment
+    first_seen_at: str | None = None

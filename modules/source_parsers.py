@@ -27,7 +27,7 @@ from modules.models import Article
 
 logger = logging.getLogger("vuln_intel.source_parsers")
 
-SOURCE_TYPES = ("rss_feed", "xml_feed", "security_blog", "vendor_advisory", "json_api")
+SOURCE_TYPES = ("rss_feed", "xml_feed", "security_blog", "vendor_advisory", "json_api", "nvd_discovery")
 DEFAULT_SOURCE_TYPE = "security_blog"
 _FEED_TYPES = {"rss_feed", "xml_feed"}
 _MAX_FEED_ITEMS = 25

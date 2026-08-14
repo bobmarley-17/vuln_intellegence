@@ -159,6 +159,18 @@ CREATE TABLE IF NOT EXISTS rt_draft_audit (
     FOREIGN KEY (draft_id) REFERENCES rt_drafts(id)
 );
 
+CREATE TABLE IF NOT EXISTS nvd_discovery_evaluated (
+    cve_id TEXT PRIMARY KEY,
+    relevant INTEGER NOT NULL,
+    reason TEXT,
+    evaluated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS nvd_discovery_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_success_window_end TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_article_cves_cve ON article_cves(cve_id);
 CREATE INDEX IF NOT EXISTS idx_source_urls_status ON source_urls(status);
 CREATE INDEX IF NOT EXISTS idx_scan_history_source ON scan_history(source_id);
@@ -673,6 +685,13 @@ class VulnCache:
             rows = conn.execute("SELECT * FROM action1_exposures ORDER BY cve_id").fetchall()
         return [dict(r) for r in rows]
 
+    def get_action1_exposures_for_cve(self, cve_id: str) -> list[dict]:
+        """Indexed lookup (idx_action1_exposures_cve) for callers that only
+        care about one CVE -- avoids scanning the whole exposures table."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM action1_exposures WHERE cve_id = ?", (cve_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_action1_sync_status(self) -> dict:
         with self._connect() as conn:
             row = conn.execute(
@@ -859,3 +878,47 @@ class VulnCache:
                 "SELECT * FROM rt_draft_audit WHERE draft_id = ? ORDER BY created_at ASC", (draft_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # NVD CVE discovery
+    # ------------------------------------------------------------------
+    def is_nvd_cve_evaluated(self, cve_id: str) -> bool:
+        """Whether NVD discovery has already judged this CVE relevant or
+        not -- once evaluated, a CVE is never re-processed by discovery
+        again, so an irrelevant one isn't re-enriched on every overlapping
+        discovery window."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM nvd_discovery_evaluated WHERE cve_id = ? LIMIT 1", (cve_id,)
+            ).fetchone()
+        return row is not None
+
+    def record_nvd_cve_evaluated(self, cve_id: str, relevant: bool, reason: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO nvd_discovery_evaluated (cve_id, relevant, reason, evaluated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(cve_id) DO UPDATE SET relevant=excluded.relevant, reason=excluded.reason,
+                    evaluated_at=excluded.evaluated_at
+                """,
+                (cve_id, int(relevant), reason, now),
+            )
+
+    def get_nvd_discovery_state(self) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT last_success_window_end FROM nvd_discovery_state WHERE id = 1"
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def set_nvd_discovery_state(self, window_end: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO nvd_discovery_state (id, last_success_window_end) VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET last_success_window_end=excluded.last_success_window_end
+                """,
+                (window_end,),
+            )

@@ -78,6 +78,19 @@ class Config:
     rt_password: str | None = field(default_factory=lambda: os.getenv("RT_PASSWORD"))
     rt_queue: str = field(default_factory=lambda: _get("rt_queue", "General"))
 
+    # --- NVD CVE discovery (seed-time defaults only; the seeded system
+    # source's enabled/polling_interval_minutes are controlled via the
+    # Sources UI afterwards, same as any other source) ---
+    nvd_discovery_enabled: bool = field(
+        default_factory=lambda: str(_get("nvd_discovery_enabled", "true")).lower() == "true"
+    )
+    nvd_discovery_interval_hours: int = field(
+        default_factory=lambda: int(_get("nvd_discovery_interval_hours", 2))
+    )
+    nvd_discovery_lookback_hours: int = field(
+        default_factory=lambda: int(_get("nvd_discovery_lookback_hours", 24))
+    )
+
     # --- Dashboard session signing (secret, env-only or auto-generated) ---
     secret_key: str = field(default_factory=_load_or_create_secret_key)
 

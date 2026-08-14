@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,7 +23,7 @@ from modules.epss import EPSSClient
 from modules.kev import KEVClient
 from modules.mitre import MitreClient
 from modules.models import Article, EnrichedCVE
-from modules.nvd import NVDClient
+from modules.nvd import NVD_BASE_URL, NVDClient
 from modules.risk import RiskScorer
 from modules.rt import RTClient
 from modules.rt_drafts import create_draft_for_cve
@@ -84,6 +85,7 @@ class Pipeline:
         self.summarizer = TemplateSummarizer()
         self.risk_scorer = RiskScorer()
         self._seed_sources_from_file()
+        self._seed_nvd_discovery_source()
 
     def _seed_sources_from_file(self) -> None:
         """One-time migration: if the sources table is empty and a legacy
@@ -112,6 +114,24 @@ class Pipeline:
                 pass
         if seeded:
             logger.info("Seeded %d source(s) from %s", seeded, path)
+
+    def _seed_nvd_discovery_source(self) -> None:
+        """One-time creation of the system-managed 'NVD CVE Discovery'
+        source row (see modules.nvd.fetch_published_between /
+        self.discover_from_nvd). After this it's controlled from the
+        Sources UI like any other source -- config.nvd_discovery_enabled/
+        interval_hours are seed-time defaults only, not live overrides."""
+        try:
+            self.cache.add_source(
+                NVD_BASE_URL,
+                name="NVD CVE Discovery",
+                source_type="nvd_discovery",
+                polling_interval_minutes=self.config.nvd_discovery_interval_hours * 60,
+                enabled=self.config.nvd_discovery_enabled,
+            )
+            logger.info("Seeded NVD CVE Discovery system source")
+        except DuplicateSourceError:
+            pass
 
     def run(self) -> dict:
         """Scan every enabled source and enrich whatever CVEs turn up."""
@@ -166,10 +186,101 @@ class Pipeline:
             "cached": cached_count,
         }
 
+    def _run_nvd_discovery(self, source: dict) -> None:
+        """Runs discover_from_nvd() for the system NVD source and records
+        the outcome via the same record_scan() every article source uses,
+        so Scan History / the Sources table display it with no new UI."""
+        source_id = source["id"]
+        self.cache.mark_source_scanning(source_id)
+        started = time.monotonic()
+        try:
+            result = self.discover_from_nvd()
+        except Exception as exc:
+            logger.exception("NVD discovery failed")
+            self.cache.record_scan(
+                source_id,
+                status="Failed",
+                duration_seconds=time.monotonic() - started,
+                articles_processed=0,
+                cves_found=0,
+                error_message=str(exc),
+            )
+            return
+
+        self.cache.record_scan(
+            source_id,
+            status="Processed",
+            duration_seconds=time.monotonic() - started,
+            articles_processed=0,
+            cves_found=result["relevant"],
+        )
+
+    def discover_from_nvd(self) -> dict:
+        """Pulls recently-published CVEs directly from NVD (rather than
+        waiting for a blog to mention them) and enriches the ones that are
+        actually relevant -- KEV-listed, Critical severity, or matched
+        against the Action1 inventory -- through the exact same
+        _enrich_cve() every other discovery path uses. CVEs judged
+        irrelevant are recorded (so they're never re-evaluated on a later
+        overlapping window) but never saved to the cves table, so NVD's
+        global CVE stream doesn't flood the database."""
+        now = datetime.now(timezone.utc)
+        safety_floor = now - timedelta(hours=self.config.nvd_discovery_lookback_hours)
+        state = self.cache.get_nvd_discovery_state()
+        if state and state.get("last_success_window_end"):
+            last_end = datetime.fromisoformat(state["last_success_window_end"])
+            if last_end.tzinfo is None:
+                last_end = last_end.replace(tzinfo=timezone.utc)
+            window_start = max(last_end, safety_floor)
+        else:
+            window_start = safety_floor
+        window_end = now
+
+        logger.info("NVD discovery window: %s to %s", window_start.isoformat(), window_end.isoformat())
+        candidates = self.nvd.fetch_published_between(window_start, window_end)
+        logger.info("NVD discovery: %d record(s) received", len(candidates))
+
+        relevant_count = 0
+        kev_count = 0
+        for cve_id in candidates:
+            if self.cache.get_cve(cve_id) is not None or self.cache.is_nvd_cve_evaluated(cve_id):
+                continue
+            try:
+                cve = self._enrich_cve(cve_id, source_articles=[], discovered_via="nvd")
+            except Exception:
+                logger.exception("Failed to enrich NVD-discovered %s; skipping", cve_id)
+                continue
+
+            has_exposure = bool(self.cache.get_action1_exposures_for_cve(cve_id))
+            is_kev = cve.kev_listed
+            is_critical = cve.risk_level == "Critical"
+            relevant = is_kev or is_critical or has_exposure
+            reason = "kev" if is_kev else "critical" if is_critical else "action1_exposure" if has_exposure else "not_relevant"
+            self.cache.record_nvd_cve_evaluated(cve_id, relevant=relevant, reason=reason)
+
+            if relevant:
+                self.cache.save_cve(cve)
+                relevant_count += 1
+                if is_kev:
+                    kev_count += 1
+
+        self.cache.set_nvd_discovery_state(window_end.isoformat())
+        logger.info(
+            "NVD discovery completed: %d received, %d relevant (%d KEV)",
+            len(candidates), relevant_count, kev_count,
+        )
+        return {"received": len(candidates), "relevant": relevant_count, "kev": kev_count}
+
     def _scan_source(self, source: dict) -> list[Article]:
         """Fetch one source and record the outcome to scan_history,
         regardless of success or failure -- a source that errors out must
-        never stop the rest of the scan."""
+        never stop the rest of the scan. The NVD discovery system source
+        doesn't produce Articles at all, so it's handled separately and
+        always reports back an empty article list here."""
+        if source["source_type"] == "nvd_discovery":
+            self._run_nvd_discovery(source)
+            return []
+
         source_id = source["id"]
         label = source.get("name") or source["url"]
         self.cache.mark_source_scanning(source_id)
@@ -244,15 +355,25 @@ class Pipeline:
         cached = self.cache.get_cached_cve(cve_id)
         if cached:
             return cached
-        enriched = self._enrich_cve(cve_id, source_articles=[])
+        enriched = self._enrich_cve(cve_id, source_articles=[], discovered_via="manual")
         if not enriched.published_date and not enriched.description:
             return None
         self.cache.save_cve(enriched)
         return enriched
 
-    def _enrich_cve(self, cve_id: str, source_articles: list[str]) -> EnrichedCVE:
+    def _enrich_cve(self, cve_id: str, source_articles: list[str], discovered_via: str = "article") -> EnrichedCVE:
         logger.info("Enriching %s", cve_id)
-        cve = EnrichedCVE(cve_id=cve_id, source_articles=sorted(set(source_articles)))
+        # A CVE's original discovery channel/date is set once and carried
+        # forward across re-enrichment -- it should never flip to "nvd" (or
+        # reset first_seen_at) just because NVD discovery happened to see it
+        # again after an article already found it first.
+        existing = self.cache.get_cve(cve_id)
+        cve = EnrichedCVE(
+            cve_id=cve_id,
+            source_articles=sorted(set(source_articles)),
+            discovered_via=existing.discovered_via if existing else discovered_via,
+            first_seen_at=existing.first_seen_at if existing else datetime.now(timezone.utc).isoformat(),
+        )
 
         configurations = self.nvd.enrich(cve_id, cve)
         self.mitre.enrich(cve_id, cve)

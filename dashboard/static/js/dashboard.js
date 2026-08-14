@@ -118,6 +118,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 renderSourcesTable();
                 renderSourceEffectivenessChart();
                 populateScanHistorySourceFilter();
+                renderNvdDiscoveryStatus(data);
                 const el = document.getElementById('sources-summary-line');
                 if (el) {
                     const enabledCount = data.filter(s => s.enabled).length;
@@ -125,6 +126,27 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             })
             .catch(error => console.error('Error fetching sources:', error));
+    }
+
+    function renderNvdDiscoveryStatus(sources) {
+        const container = document.getElementById('nvd-discovery-status');
+        if (!container) return;
+        const nvdSource = (sources || []).find(s => s.source_type === 'nvd_discovery');
+        if (!nvdSource) {
+            container.innerHTML = '';
+            return;
+        }
+        const statusDot = nvdSource.status === 'Processed' ? 'text-success' : nvdSource.status === 'Failed' ? 'text-danger' : 'text-muted';
+        const lastRun = nvdSource.last_checked ? new Date(nvdSource.last_checked).toLocaleString() : 'never run yet';
+        const cvesFound = nvdSource.cves_found ?? 0;
+        container.innerHTML = `
+            <i class="bi bi-circle-fill ${statusDot}" style="font-size: 0.5rem;"></i>
+            NVD Discovery &mdash; last run: ${escapeHtml(lastRun)}, ${cvesFound} relevant CVE${cvesFound === 1 ? '' : 's'} found
+            <button type="button" class="btn btn-link btn-sm p-0 ms-1" id="nvd-discovery-view-btn">View &rarr;</button>
+        `;
+        // Rebuilt via innerHTML above, so this button needs its own listener --
+        // the generic [data-nav] wiring only runs once at page load.
+        document.getElementById('nvd-discovery-view-btn').addEventListener('click', () => switchToTab('tab-sources'));
     }
 
     function fetchSourceTypes() {
@@ -228,6 +250,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function sourceActionButtons(source) {
+        // The NVD CVE Discovery row is a system-managed source (seeded
+        // automatically, not user-created) -- it can be viewed, edited,
+        // scanned, and enabled/disabled like any other, but never deleted.
+        const isSystemSource = source.source_type === 'nvd_discovery';
         return `
             <div class="source-actions">
                 <button class="btn btn-outline-secondary" data-action="view" data-id="${source.id}" title="View"><i class="bi bi-eye"></i></button>
@@ -235,7 +261,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <button class="btn btn-outline-secondary" data-action="scan" data-id="${source.id}" title="Run Scan" ${!source.enabled ? 'disabled' : ''}><i class="bi bi-play-fill"></i></button>
                 <button class="btn btn-outline-secondary" data-action="toggle" data-id="${source.id}" data-enabled="${source.enabled}" title="${source.enabled ? 'Disable' : 'Enable'}"><i class="bi ${source.enabled ? 'bi-toggle-on' : 'bi-toggle-off'}"></i></button>
                 <button class="btn btn-outline-secondary" data-action="history" data-id="${source.id}" title="Scan History"><i class="bi bi-clock-history"></i></button>
-                <button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>
+                ${isSystemSource ? '' : `<button class="btn btn-outline-danger" data-action="delete" data-id="${source.id}" title="Delete"><i class="bi bi-trash"></i></button>`}
             </div>
         `;
     }
